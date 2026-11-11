@@ -182,3 +182,30 @@ def test_substituir_imagem_apaga_o_credito_antigo_e_envio_ruim_nao_deixa_pasta(t
     with pytest.raises(ValueError):
         acervo.guardar(ruim, "quebrada", pasta)
     assert not (pasta / "quebrada").exists()
+
+
+def test_processar_pela_tela_abre_o_levantamento_novo_sem_erro(dois_runs, tmp_path, monkeypatch):
+    """Clica em Processar de verdade: o fim do processamento troca de levantamento e de secao.
+
+    Duas vezes essa troca terminou em StreamlitWidgetAlreadyInstantiatedError, porque mexia
+    na chave de um controle ja desenhado. So um teste que aperta o botao pega isso.
+    """
+    cena = sintetico.gerar_cena(tmp_path / "c", n_buracos=3, gsd=0.03, comprimento_m=24.0, seed=4)
+    pasta = tmp_path / "acervo"
+    img = acervo.guardar(cena / "orto.tif", "nova", pasta)
+    acervo.guardar_vetor(cena / "pista.geojson", img)
+    monkeypatch.setenv("PAVISCAN_IMAGENS", str(pasta))
+    at = _app(dois_runs).run()
+    at.session_state["aba"] = "Nova análise"
+    at.run()
+    assert not at.exception, at.exception
+    next(b for b in at.button if b.label == "Processar").click().run()
+    assert not at.exception, at.exception
+    assert (dois_runs / "nova" / "resumo.json").is_file()
+    assert at.session_state["levantamento"] == "nova"
+    assert at.session_state["aba"] == "Visão geral"
+    assert int(_metrica(at, "Defeitos")) >= 3
+    # a tela seguinte continua utilizavel
+    at.session_state["aba"] = "Inspeção"
+    at.run()
+    assert not at.exception, at.exception

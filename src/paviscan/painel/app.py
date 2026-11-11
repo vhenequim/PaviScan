@@ -601,8 +601,10 @@ def _nova_analise() -> None:
         with st.expander("Detalhe técnico"):
             st.exception(erro)
         return
+    # chaves de controle nao podem ser alteradas depois que o controle foi desenhado nesta
+    # execucao: a escolha vai por chaves "pendentes", aplicadas no inicio da proxima
     st.session_state["levantamento_pendente"] = nome_run
-    st.session_state["aba"] = ABAS[0]
+    st.session_state["aba_pendente"] = ABAS[0]
     st.cache_data.clear()
     st.rerun()
 
@@ -756,6 +758,9 @@ if len(det_todos) and det.empty:
     st.warning("Nenhum defeito passa nos filtros atuais. Afrouxe um filtro ou limpe todos.")
 
 # navegacao com chave: a secao escolhida sobrevive a cada clique, e so ela e desenhada
+aba_pendente = st.session_state.pop("aba_pendente", None)
+if aba_pendente in ABAS:  # depois de processar, abre a visao geral do levantamento novo
+    st.session_state["aba"] = aba_pendente
 aba = st.segmented_control("Seção", ABAS, default=ABAS[0], key="aba", label_visibility="collapsed")
 aba = aba or ABAS[0]
 
