@@ -116,12 +116,15 @@ def guardar(origem, nome: str, pasta: Path, substituir: bool = False) -> Imagem:
             with open(parcial, "wb") as f:
                 shutil.copyfileobj(origem, f, length=8 * 1024 * 1024)
         _validar(parcial)
-        for velho in ("pista.geojson", "eixo.geojson", "vias_osm.json"):
+        # o que era da imagem antiga sai junto, inclusive o credito (stac_item.json)
+        for velho in ("pista.geojson", "eixo.geojson", "vias_osm.json", "stac_item.json"):
             (destino / velho).unlink(missing_ok=True)
         shutil.rmtree(destino / "previa_rapida", ignore_errors=True)
         os.replace(parcial, img.orto)
     finally:
         parcial.unlink(missing_ok=True)
+        if destino.is_dir() and not any(destino.iterdir()):
+            destino.rmdir()  # envio que falhou nao deixa pasta vazia no acervo
     return img
 
 

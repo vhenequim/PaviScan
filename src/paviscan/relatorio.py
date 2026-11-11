@@ -208,25 +208,42 @@ def gerar_html(
     )
     figs = []
     for d in maiores.itertuples():
-        arq = run / "recortes" / f"{int(d.id)}.jpg"
-        if arq.is_file():
+        arq = dados.recorte(run, d.id)
+        if arq is not None:
             figs.append(
                 f"<figure><img src='{_img(arq.read_bytes())}'><figcaption>#{int(d.id)} · {dados.fmt(d.area_m2)} m² · "
                 f"{html.escape(dados.ROTULO_CLASSE.get(d.classe, d.classe))} · {html.escape(str(d.via))}</figcaption></figure>"
             )
     if figs:
         p.append("<h2>Maiores defeitos</h2><div class='grade'>" + "".join(figs) + "</div>")
+    if "revisao" in defeitos.columns and len(defeitos):
+        sit = defeitos["revisao"].value_counts()
+        partes = [
+            f"{int(sit.get(k, 0))} {rotulo}"
+            for k, rotulo in (
+                ("confirmado", "confirmadas por revisão"),
+                ("manual", "adicionadas à mão"),
+                ("pendente", "ainda não revisadas"),
+                ("falso_positivo", "marcadas como falso positivo"),
+            )
+            if int(sit.get(k, 0))
+        ]
+        p.append(
+            f"<p class='nota'><b>Revisão manual:</b> das áreas deste relatório, {', '.join(partes)}.</p>"
+        )
     limites = html.escape(resumo.get("limites_detector") or "")
     p.append(
         f"<h2>Como ler este relatório</h2><p class='nota'>{limites} O índice de condição (0 a 100) e os conceitos A a E são "
         "de trabalho, para ordenar trechos; não são IGG nem ICP de norma. Os números são candidatos a defeito detectados "
         "automaticamente e devem ser confirmados em campo ou pelos recortes.</p>"
     )
-    credito = (
-        f"Imagem: {html.escape(str(fonte.get('produtor')))}, {html.escape(str(fonte.get('licenca')))}, via {html.escape(str(fonte.get('origem')))}. "
-        if fonte
-        else ""
-    )
+    credito = ""
+    if fonte:
+        itens = [fonte.get("produtor"), fonte.get("licenca")]
+        itens = [html.escape(str(v)) for v in itens if v]
+        if fonte.get("origem"):
+            itens.append("via " + html.escape(str(fonte["origem"])))
+        credito = f"Imagem: {', '.join(itens)}. " if itens else ""
     p.append(
         f"<p class='nota'>{credito}Detector {html.escape(resumo['detector'])} v{html.escape(resumo['versao'])}.</p></div></body></html>"
     )

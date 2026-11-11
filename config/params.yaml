@@ -29,14 +29,15 @@ classico:
   croma_max: 40             # max - min dos canais RGB; acima disso o pixel nao e asfalto
   separacao_nucleo: 0.6     # watershed: nucleo = distancia a borda >= esta fracao da maior da regiao
   solo_exposto: true        # segunda passada: revestimento perdido (cor de solo no meio do pavimento)
-  solo_contraste_min: 30    # contraste minimo da segunda passada, em niveis de (cinza / 2 + R - B)
+  solo_contraste_min: 30    # contraste minimo da segunda passada, no sinal (peso x cinza + R - B)
+  solo_peso_brilho: 0.5     # peso do brilho no sinal de solo; o resto e a cor (R - B)
+  solo_k_mad: 0             # sem o termo k x MAD: dano extenso nao e raro na imagem
   solo_quente_min: 15       # R - B minimo do pixel: pintura e concreto claros, sem cor, nao entram
   solo_matiz_max: 42        # matiz maximo em graus: solo vai do vermelho ao laranja; pintura amarela passa disso
   exg_max: 20               # 2G - R - B acima disto e vegetacao e fica fora da segunda passada
   solo_sobreposicao_max: 0.5  # regiao ja marcada como buraco nao entra de novo como solo exposto
   solo_janela_fundo_m: 6.0  # o revestimento perdido forma faixas largas: janela de fundo maior
   solo_fundo_percentil: 80  # fundo = pavimento mais "frio" da janela (basta 20 % de pavimento inteiro)
-  solo_area_max_m2: 80
 
 severidade:                 # por area do buraco, em m2. Faixas de trabalho, nao sao de norma
   media_a_partir_de: 0.25
@@ -106,8 +107,10 @@ orcamento:                  # precos em config/precos.csv, solucoes em config/so
 condicao:                   # indice de condicao de 0 a 100. E de trabalho: nao e IGG nem ICP de norma
   peso_area: 8.0            # pontos perdidos por 1 % de area afetada
   peso_densidade: 1.0       # pontos perdidos por defeito a cada 100 m
+  so_area: [solo_exposto]   # classes extensas contam so pela area: seus pedacos nao entram na densidade
   conceitos: {A: 85, B: 70, C: 50, D: 30}   # nota minima de cada conceito; abaixo de D e E
 
 acervo:
   pasta_imagens: dados      # ortofotos enviadas pelo painel: uma pasta por imagem (orto.tif, pista, eixo)
   previa_lado_px: 1400      # previa rapida usada na tela de entrada
+  gsd_aviso_cm: 5           # acima disto a tela avisa que buraco pequeno fica invisivel

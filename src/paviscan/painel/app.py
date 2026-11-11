@@ -12,9 +12,16 @@ import plotly.express as px
 import pydeck as pdk
 import streamlit as st
 
-from paviscan import acervo, base_publica, orcamento, relatorio
+from paviscan import acervo, base_publica, orcamento, relatorio, revisao
 from paviscan.painel import dados
-from paviscan.painel.dados import CONCEITOS, ROTULO_CLASSE, ROTULO_SEVERIDADE, SEVERIDADES, fmt
+from paviscan.painel.dados import (
+    CONCEITOS,
+    ROTULO_CLASSE,
+    ROTULO_SEVERIDADE,
+    ROTULO_SITUACAO,
+    SEVERIDADES,
+    fmt,
+)
 
 COR = {"baixa": "#E3B23C", "media": "#EE7B30", "alta": "#D62839"}
 COR_RGB = {k: [int(v[i : i + 2], 16) for i in (1, 3, 5)] for k, v in COR.items()}
@@ -24,6 +31,10 @@ VERDE = "#1F3A2B"
 RUNS = Path(os.environ.get("PAVISCAN_RUNS", "runs"))
 ALTURA_MAPA = 620
 SEM_BARRA = {"displayModeBar": False}
+ABAS = [
+    "Visão geral", "Vias e trechos", "Inspeção", "Orçamento", "Dados e relatório",
+    "Nova análise", "Próximos passos",
+]  # fmt: skip
 
 st.set_page_config(page_title="PaviScan", page_icon="🛣️", layout="wide")
 st.markdown(
@@ -64,12 +75,33 @@ def _params() -> dict:
 
 
 @st.cache_data(show_spinner=False)
-def _tabelas_orcamento():
+def _tabelas_orcamento(carimbo: float):
     return orcamento.carregar_tabelas()
+
+
+def _carimbo_tabelas() -> float:
+    """Muda quando config/solucoes.csv ou config/precos.csv e editado."""
+    from paviscan import config as config_mod
+
+    pasta = config_mod.localizar().parent
+    return max((pasta / n).stat().st_mtime for n in ("solucoes.csv", "precos.csv"))
 
 
 def _carimbo(run: Path) -> float:
     return (run / "resumo.json").stat().st_mtime
+
+
+def _carimbo_rev(run: Path) -> float:
+    arq = revisao.caminho(run)
+    return arq.stat().st_mtime if arq.is_file() else 0.0
+
+
+@st.cache_data(show_spinner=False)
+def _revisado(run: str, carimbo: float, carimbo_rev: float):
+    """Defeitos com a revisao manual aplicada por cima do que o detector gravou."""
+    det, seg, _ = dados.carregar(Path(run))
+    faixas = dados.parametros()["severidade"]
+    return revisao.aplicar(det, seg, revisao.carregar(Path(run)), faixas)
 
 
 def _limpar(chaves: list[str]) -> None:
@@ -223,8 +255,8 @@ def _selecionado(evento) -> int | None:
 
 
 def _ficha(linha, run: Path) -> None:
-    recorte = run / "recortes" / f"{int(linha.id)}.jpg"
-    if recorte.is_file():
+    recorte = dados.recorte(run, linha.id)
+    if recorte is not None:
         st.image(str(recorte), width="stretch")
     cor = COR[linha.severidade]
     st.markdown(
@@ -253,8 +285,132 @@ def _orcar(det, seg, cfg_orc: dict, precos: pd.DataFrame, solucoes: pd.DataFrame
         "por_servico": orcamento.por_servico(plano),
         "por_via": orcamento.por_via(plano, det, seg),
         "placeholder": bool(precos["placeholder"].any()),
-        "seg_c": int(orc.loc[orc["opcao"] == "C", "id"].nunique()),
+        "seg_c": orcamento.trechos_a_recapear(orc),
     }
+
+
+# ============================================================== revisao manual
+FILAS = {
+    "Pendentes": "pendente",
+    "Todas": None,
+    "Confirmadas": "confirmado",
+    "Falsos positivos": "falso_positivo",
+    "Adicionadas à mão": "manual",
+}
+
+
+def _marcar(run: Path, ident: int, situacao: str) -> None:
+    revisao.marcar(run, ident, situacao)
+
+
+def _desfazer(run: Path, ident: int) -> None:
+    revisao.desfazer(run, ident)
+    (run / "recortes" / f"rev_{int(ident)}.jpg").unlink(missing_ok=True)
+
+
+def _remover(run: Path, ident: int) -> None:
+    revisao.remover(run, ident)
+    (run / "recortes" / f"rev_{int(ident)}.jpg").unlink(missing_ok=True)
+
+
+@st.cache_data(show_spinner="Lendo a ortofoto em resolução cheia...", max_entries=24)
+def _janela(orto: str, limites: tuple, carimbo: float):
+    return revisao.janela_de_edicao(Path(orto), limites, 1200, dados.parametros()["raster"])
+
+
+def _editor(orto: Path, limites: tuple, det_todos, editar, chave: str) -> list[dict]:
+    """Mapa com a ortofoto em resolucao cheia para desenhar ou corrigir poligonos.
+
+    `editar`: geometria (no SRC do levantamento) que entra ja editavel, ou None.
+    Devolve os poligonos desenhados ou editados, como GeoJSON no SRC do levantamento.
+
+    O mapa trabalha em coordenadas locais do recorte (0 a 1 no lado maior), nao em
+    latitude e longitude: o componente arredonda as coordenadas na sexta casa, o que em
+    graus daria 11 cm de erro e aqui da centesimos de milimetro. De quebra, a imagem
+    fica exatamente alinhada ao SRC projetado.
+    """
+    try:
+        import folium
+        from folium.plugins import Draw
+        from shapely import affinity
+        from shapely.geometry import mapping, shape
+        from streamlit_folium import st_folium
+    except ImportError:
+        st.error("Para desenhar na tela instale: pip install folium streamlit-folium")
+        return []
+    limites = tuple(round(float(v), 2) for v in limites)
+    try:
+        img, (x0, y0, x1, y1) = _janela(str(orto), limites, orto.stat().st_mtime)
+    except (ValueError, OSError) as erro:
+        st.error(f"Não consegui ler a ortofoto: {erro}")
+        return []
+    lado = max(x1 - x0, y1 - y0)
+
+    def para_tela(geom):
+        return affinity.affine_transform(geom, [1 / lado, 0, 0, 1 / lado, -x0 / lado, -y0 / lado])
+
+    def da_tela(geom):
+        return affinity.affine_transform(geom, [lado, 0, 0, lado, x0, y0])
+
+    lim = [[0.0, 0.0], [(y1 - y0) / lado, (x1 - x0) / lado]]
+    mapa = folium.Map(
+        location=[lim[1][0] / 2, lim[1][1] / 2], tiles=None, max_zoom=14, zoom_snap=0.25
+    )
+    folium.raster_layers.ImageOverlay(image=img, bounds=lim, opacity=1.0).add_to(mapa)
+    mapa.fit_bounds(lim)
+    caixa = det_todos.cx[x0:x1, y0:y1]
+    if editar is not None:
+        caixa = caixa[~caixa.geometry.geom_equals(editar)]
+    if len(caixa):  # as outras areas ja marcadas ali, so para referencia
+        outras = {
+            "type": "FeatureCollection",
+            "features": [
+                {"type": "Feature", "properties": {}, "geometry": mapping(para_tela(g))}
+                for g in caixa.geometry
+            ],
+        }
+        folium.GeoJson(
+            outras,
+            style_function=lambda _: {"color": "#FFD60A", "weight": 2, "fillOpacity": 0.05},
+            interactive=False,
+        ).add_to(mapa)
+    grupo = folium.FeatureGroup(name="edicao")
+    if editar is not None:
+        local = para_tela(editar)
+        for parte in local.geoms if hasattr(local, "geoms") else [local]:
+            folium.Polygon(
+                locations=[(y, x) for x, y in parte.exterior.coords],
+                color="#D62839", weight=3, fill_opacity=0.08,
+            ).add_to(grupo)  # fmt: skip
+    grupo.add_to(mapa)
+    so_poligono = {k: False for k in ("polyline", "rectangle", "circle", "marker", "circlemarker")}
+    so_poligono["polygon"] = {
+        "shapeOptions": {"color": "#D62839", "weight": 3, "fillOpacity": 0.08}
+    }
+    Draw(
+        feature_group=grupo, draw_options=so_poligono, edit_options={"edit": True, "remove": True}
+    ).add_to(mapa)
+    saida = st_folium(mapa, height=560, width=None, returned_objects=["all_drawings"], key=chave)
+    desenhos = (saida or {}).get("all_drawings") or []
+    return [
+        mapping(da_tela(shape(d["geometry"])))
+        for d in desenhos
+        if d.get("geometry", {}).get("type") in ("Polygon", "MultiPolygon")
+    ]
+
+
+def _refazer_recortes(run: Path, orto: Path, ids: list[int], det_bruto, seg, params: dict) -> None:
+    """Miniatura nova, com o contorno revisado, para as areas corrigidas ou adicionadas."""
+    atual = revisao.aplicar(det_bruto, seg, revisao.carregar(run), params["severidade"])
+    for ident in ids:
+        linha = atual[atual["id"] == ident]
+        if len(linha):
+            try:
+                revisao.recorte_do_defeito(run, orto, ident, linha.geometry.iloc[0], params)
+            except (ValueError, OSError) as erro:  # a revisao ja esta salva; so a miniatura falhou
+                st.warning(
+                    f"A área #{ident} foi salva, mas a miniatura não pôde ser refeita: {erro}"
+                )
 
 
 # ============================================================== entrada de arquivos
@@ -352,9 +508,10 @@ def _nova_analise() -> None:
             f"{meta['src']} · {fmt(meta['tamanho_mb'], 0)} MB"
             + (f" · será reprojetada para {meta['src_trabalho']}" if meta["reprojetada"] else "")
         )
-        if meta["gsd_cm"] > 5:
+        gsd_aviso = float(dados.parametros()["acervo"]["gsd_aviso_cm"])
+        if meta["gsd_cm"] > gsd_aviso:
             st.warning(
-                "GSD acima de 5 cm/px: buracos pequenos (30 cm) ficam abaixo do que o método enxerga."
+                f"GSD acima de {fmt(gsd_aviso, 0)} cm/px: buracos pequenos (30 cm) ficam abaixo do que o método enxerga."
             )
 
     st.markdown("<div class='passo'>2 · Onde está a via</div>", unsafe_allow_html=True)
@@ -375,7 +532,7 @@ def _nova_analise() -> None:
             "terra": "Via muito gasta ou de terra",
         }.get,
         help="Define como a borda da via é achada em volta do eixo.",
-        disabled=modo in ("Usar a pista já guardada", "Enviar arquivo"),
+        disabled=modo == "Usar a pista já guardada",
     )
     linhas = []
     if modo.startswith("Automático"):
@@ -444,7 +601,8 @@ def _nova_analise() -> None:
         with st.expander("Detalhe técnico"):
             st.exception(erro)
         return
-    st.session_state["levantamento"] = nome_run
+    st.session_state["levantamento_pendente"] = nome_run
+    st.session_state["aba"] = ABAS[0]
     st.cache_data.clear()
     st.rerun()
 
@@ -467,17 +625,21 @@ if not runs:
 
 with st.sidebar:
     nomes = [r.name for r in runs]
+    pendente = st.session_state.pop("levantamento_pendente", None)
+    if pendente in nomes:  # levantamento recem-processado: abre nele
+        st.session_state["levantamento"] = pendente
     if st.session_state.get("levantamento") not in nomes:
         st.session_state["levantamento"] = nomes[0]
     if len(runs) > 1:
         st.selectbox("Levantamento", nomes, key="levantamento")
     run = runs[nomes.index(st.session_state["levantamento"])]
-    det_todos, seg, resumo = _carregar(str(run), _carimbo(run))
+    det_bruto, seg, resumo = _carregar(str(run), _carimbo(run))
+    det_todos = _revisado(str(run), _carimbo(run), _carimbo_rev(run))
 
     st.markdown("### Filtros")
     pre = f"{run.name}:"
-    chaves = [pre + k for k in ("classe", "area", "sev", "conf", "vias", "segs")]
-    area_min = area_max = conf_min = sev = vias = segs = classes = None
+    chaves = [pre + k for k in ("classe", "area", "sev", "conf", "vias", "segs", "sit")]
+    area_min = area_max = conf_min = sev = vias = segs = classes = situacoes = None
     if len(det_todos):
         tipos = [c for c in ROTULO_CLASSE if c in set(det_todos["classe"])]
         tipos += sorted(set(det_todos["classe"]) - set(tipos))
@@ -508,39 +670,62 @@ with st.sidebar:
         if vias:
             opcoes = sorted(int(s) for s in seg.loc[seg["via"].isin(vias), "segmento"])
         segs = st.multiselect("Segmentos", opcoes, placeholder="Todos", key=chaves[5]) or None
+        # falso positivo fica fora dos numeros, a menos que o usuario peca para incluir
+        situacoes = [x for x in revisao.SITUACOES if x != "falso_positivo"]
+        if (det_todos["revisao"] == "falso_positivo").any():
+            incluir = st.toggle(
+                "Incluir falsos positivos",
+                value=False,
+                key=chaves[6],
+                help="Áreas marcadas como falso positivo na revisão ficam fora dos indicadores, do orçamento e do relatório.",
+            )
+            situacoes = None if incluir else situacoes
         st.button("Limpar filtros", on_click=_limpar, args=(chaves,), width="stretch")
     else:
         st.caption("Nenhum defeito detectado neste levantamento.")
 
 params = _params()
-det = dados.filtrar(det_todos, area_min, area_max, conf_min, sev, segs, vias, classes)
+det = dados.filtrar(det_todos, area_min, area_max, conf_min, sev, segs, vias, classes, situacoes)
 seg_f = dados.filtrar_segmentos(seg, segs, vias)  # recorte de via/segmento escolhido
-filtrado = len(det) < len(det_todos)
+validos = dados.filtrar(det_todos, situacoes=situacoes)  # tudo, menos o que a revisao descartou
+filtrado = len(det) < len(validos)
 ind = dados.resumir(det, seg_f)
 cond = dados.condicao_geral(det, seg_f, params["condicao"])
 cond_seg = dados.condicao_segmentos(det, seg_f, params["condicao"])
 tab_vias = dados.por_via(det, seg_f, params["condicao"])
 
 # orcamento do recorte, com os parametros escolhidos na aba Orcamento (ou os do params.yaml)
-solucoes, precos_base = _tabelas_orcamento()
+solucoes, precos_base = _tabelas_orcamento(_carimbo_tabelas())
 cfg_orc = dict(params["orcamento"])
-cfg_orc["pavimento"] = st.session_state.get("orc_pavimento", cfg_orc["pavimento"])
-cfg_orc["terreno"] = st.session_state.get("orc_terreno", cfg_orc["terreno"])
-cfg_orc["bdi"] = st.session_state.get("orc_bdi", 100 * cfg_orc["bdi"]) / 100
-cfg_orc["margem_corte_m"] = st.session_state.get("orc_margem", cfg_orc["margem_corte_m"])
-cfg_orc["limite_recapeamento"] = (
-    st.session_state.get("orc_limite", 100 * cfg_orc["limite_recapeamento"]) / 100
+# o Streamlit apaga o estado de um controle que nao foi desenhado; por isso a ultima escolha
+# fica guardada em "orc_salvo" e vale tambem com a secao Orcamento fechada
+salvo = st.session_state.setdefault(
+    "orc_salvo",
+    {
+        "pavimento": cfg_orc["pavimento"],
+        "terreno": cfg_orc["terreno"],
+        "bdi": 100 * cfg_orc["bdi"],
+        "margem": float(cfg_orc["margem_corte_m"]),
+        "limite": 100 * cfg_orc["limite_recapeamento"],
+    },
 )
+for nome in salvo:
+    salvo[nome] = st.session_state.get(f"orc_{nome}", salvo[nome])
+cfg_orc["pavimento"], cfg_orc["terreno"] = salvo["pavimento"], salvo["terreno"]
+cfg_orc["bdi"] = salvo["bdi"] / 100
+cfg_orc["margem_corte_m"] = salvo["margem"]
+cfg_orc["limite_recapeamento"] = salvo["limite"] / 100
 precos = st.session_state.get("orc_precos_editados", precos_base)
 orc = _orcar(det, seg_f, cfg_orc, precos, solucoes)
 
 # ============================================================== cabecalho
 fonte = resumo.get("fonte") or {}
+pista_toda = dados.area_e_extensao(seg)
 titulo = fonte.get("titulo") or run.name.replace("_", " ").title()
 st.markdown(
     f"<div class='faixa'><h1>{html.escape(titulo)}</h1><p>Levantamento <b>{html.escape(run.name)}</b> · "
-    f"GSD {fmt(100 * resumo['gsd_m'], 1)} cm/px · {fmt(float(seg['area_pista_m2'].sum()), 0)} m² de pista em "
-    f"{len(seg)} segmentos de {fmt(float(seg['comprimento_m'].sum()), 0)} m"
+    f"GSD {fmt(100 * resumo['gsd_m'], 1)} cm/px · {fmt(pista_toda['area_pista_m2'], 0)} m² de pista em "
+    f"{pista_toda['n_segmentos']} segmentos de {fmt(pista_toda['extensao_m'], 0)} m"
     + (f" · imagem de {html.escape(str(fonte['data']))}" if fonte.get("data") else "")
     + "</p></div>",
     unsafe_allow_html=True,
@@ -561,7 +746,7 @@ c5.metric(
     help="Plano recomendado, com BDI. Preços ilustrativos até serem substituídos na aba Orçamento.",
 )
 if filtrado:
-    st.caption(f"Filtro ativo: **{len(det)} de {len(det_todos)} defeitos**.")
+    st.caption(f"Filtro ativo: **{len(det)} de {len(validos)} defeitos**.")
 if resumo.get("cortadas_por_janela"):
     st.warning(
         f"{resumo['cortadas_por_janela']} detecção(ões) grandes ficaram na emenda das janelas de "
@@ -570,15 +755,12 @@ if resumo.get("cortadas_por_janela"):
 if len(det_todos) and det.empty:
     st.warning("Nenhum defeito passa nos filtros atuais. Afrouxe um filtro ou limpe todos.")
 
-aba_geral, aba_vias, aba_inspecao, aba_orc, aba_dados, aba_nova, aba_passos = st.tabs(
-    [
-        "Visão geral", "Vias e trechos", "Inspeção", "Orçamento", "Dados e relatório",
-        "Nova análise", "Próximos passos",
-    ]
-)  # fmt: skip
+# navegacao com chave: a secao escolhida sobrevive a cada clique, e so ela e desenhada
+aba = st.segmented_control("Seção", ABAS, default=ABAS[0], key="aba", label_visibility="collapsed")
+aba = aba or ABAS[0]
 
 # ============================================================== visao geral
-with aba_geral:
+if aba == "Visão geral":
     col_mapa, col_lado = st.columns([3.2, 1], gap="medium")
     with col_mapa:
         o1, o2, o3, _ = st.columns([1, 1.5, 1.2, 1.5])
@@ -636,12 +818,8 @@ with aba_geral:
                 "area_m2", ascending=False
             )
             with coluna:
-                recorte = (
-                    run / "recortes" / f"{int(do_trecho['id'].iloc[0])}.jpg"
-                    if len(do_trecho)
-                    else None
-                )
-                if recorte is not None and recorte.is_file():
+                recorte = dados.recorte(run, do_trecho["id"].iloc[0]) if len(do_trecho) else None
+                if recorte is not None:
                     st.image(str(recorte), width="stretch")
                 st.markdown(
                     f"<div class='cartao'>{_selo(trecho.conceito)} <b>Segmento {int(trecho.segmento)}</b><br/>"
@@ -651,7 +829,7 @@ with aba_geral:
                 )
 
 # ============================================================== vias e trechos
-with aba_vias:
+if aba == "Vias e trechos":
     if len(tab_vias):
         g1, g2 = st.columns([1.1, 1], gap="large")
         with g1:
@@ -750,35 +928,201 @@ with aba_vias:
         "(bom) a E (crítico). É um índice de trabalho para ordenar trechos, não é IGG nem ICP de norma."
     )
 
-# ============================================================== inspecao
-with aba_inspecao:
-    st.caption(
-        "Recorte da ortofoto em resolução cheia para cada defeito, com o contorno detectado. "
-        "É aqui que se separa defeito de sombra, mancha e veículo."
+# ============================================================== inspecao e revisao
+if aba == "Inspeção":
+    cont = revisao.contagem(det_todos)
+    st.progress(
+        cont["revisados"] / cont["do_detector"] if cont["do_detector"] else 0.0,
+        text=(
+            f"Revisão: {cont['revisados']} de {cont['do_detector']} detecções conferidas · "
+            f"{cont['confirmado']} confirmadas · {cont['falso_positivo']} falsos positivos · "
+            f"{cont['manual']} adicionadas à mão"
+        ),
     )
-    if len(det):
-        k1, k2, _ = st.columns([1.2, 1, 3])
-        criterio = k1.selectbox("Ordenar por", ["Maior área", "Maior confiança", "Menor confiança"])
-        quantos = k2.select_slider("Quantidade", [6, 12, 18, 24, 36], value=12)
+    modo_rev = st.radio(
+        "Modo de revisão",
+        ["Triagem rápida", "Corrigir contorno", "Adicionar área que faltou"],
+        horizontal=True,
+        label_visibility="collapsed",
+    )
+    # a revisao enxerga tambem o que ja foi marcado como falso positivo
+    det_insp = dados.filtrar(det_todos, area_min, area_max, conf_min, sev, segs, vias, classes)
+    orto_run = dados.caminho_ortofoto(run, resumo)
+    n_edicao = st.session_state.get(
+        "n_edicao", 0
+    )  # muda a chave e limpa o desenho depois de salvar
+
+    if modo_rev == "Triagem rápida":
+        st.caption(
+            "Recorte em resolução cheia de cada área, com o contorno detectado. Marque ✓ no que é defeito "
+            "e ✗ no que não é. Falso positivo sai dos indicadores, do orçamento e do relatório."
+        )
+        k1, k2, k3, _ = st.columns([1.1, 1.2, 1, 2.2])
+        fila = k1.selectbox("Mostrar", list(FILAS))
+        criterio = k2.selectbox("Ordenar por", ["Maior área", "Maior confiança", "Menor confiança"])
+        quantos = k3.select_slider("Quantidade", [6, 12, 18, 24, 36], value=12)
         coluna, crescente = {
             "Maior área": ("area_m2", False),
             "Maior confiança": ("confianca", False),
             "Menor confiança": ("confianca", True),
         }[criterio]
-        amostra = det.sort_values(coluna, ascending=crescente).head(quantos)
+        na_fila = det_insp if FILAS[fila] is None else det_insp[det_insp["revisao"] == FILAS[fila]]
+        amostra = na_fila.sort_values(coluna, ascending=crescente).head(quantos)
+        if amostra.empty:
+            st.info("Nada nesta fila com os filtros atuais.")
         grade = st.columns(6)
         for i, item in enumerate(amostra.itertuples()):
-            recorte = run / "recortes" / f"{int(item.id)}.jpg"
+            ident = int(item.id)
             with grade[i % 6]:
-                if recorte.is_file():
+                recorte = dados.recorte(run, ident)
+                if recorte is not None:
                     st.image(str(recorte), width="stretch")
                 st.caption(
-                    f"**#{int(item.id)}** · {fmt(item.area_m2)} m² · conf. {fmt(item.confianca)}  \n"
-                    f"{ROTULO_CLASSE.get(item.classe, item.classe)} · {item.via}"
+                    f"**#{ident}** · {fmt(item.area_m2)} m² · conf. {fmt(item.confianca)}  \n"
+                    f"{ROTULO_CLASSE.get(item.classe, item.classe)} · **{ROTULO_SITUACAO[item.revisao]}**"
                 )
+                if item.revisao == "manual":
+                    st.button(
+                        "Remover",
+                        key=f"rm:{run.name}:{ident}",
+                        on_click=_remover,
+                        args=(run, ident),
+                    )
+                    continue
+                b1, b2, b3 = st.columns(3)
+                b1.button(
+                    "✓", key=f"ok:{run.name}:{ident}", help="É defeito", on_click=_marcar,
+                    args=(run, ident, "confirmado"),
+                    type="primary" if item.revisao == "confirmado" else "secondary",
+                )  # fmt: skip
+                b2.button(
+                    "✗", key=f"fp:{run.name}:{ident}", help="Falso positivo", on_click=_marcar,
+                    args=(run, ident, "falso_positivo"),
+                    type="primary" if item.revisao == "falso_positivo" else "secondary",
+                )  # fmt: skip
+                b3.button(
+                    "↺", key=f"un:{run.name}:{ident}", help="Voltar a pendente", on_click=_marcar,
+                    args=(run, ident, "pendente"), disabled=item.revisao == "pendente",
+                )  # fmt: skip
+
+    elif orto_run is None:
+        st.warning(
+            "Para corrigir ou adicionar áreas é preciso a ortofoto original, e ela não foi encontrada "
+            f"(`{resumo.get('ortofoto_caminho') or resumo.get('ortofoto', '')}`). A triagem rápida continua funcionando."
+        )
+
+    elif modo_rev == "Corrigir contorno":
+        if det_insp.empty:
+            st.info("Nenhuma área com os filtros atuais.")
+        else:
+            ordem = det_insp.sort_values("area_m2", ascending=False)
+            rotulos = {
+                int(
+                    r.id
+                ): f"#{int(r.id)} · {ROTULO_CLASSE.get(r.classe, r.classe)} · {fmt(r.area_m2)} m² · "
+                f"{r.via} · {ROTULO_SITUACAO[r.revisao]}"
+                for r in ordem.itertuples()
+            }
+            alvo = st.selectbox(
+                "Área a corrigir", list(rotulos), format_func=rotulos.get, key=f"alvo:{run.name}"
+            )
+            linha = ordem[ordem["id"] == alvo].iloc[0]
+            st.caption(
+                "O contorno atual está em vermelho. Clique no ícone de editar (à esquerda do mapa) para arrastar "
+                "os vértices, ou apague e desenhe um polígono novo. Depois clique em Salvar contorno. "
+                "Em amarelo, as outras áreas já marcadas ali."
+            )
+            x0, y0, x1, y1 = linha.geometry.bounds
+            m = 2 * float(params["recortes"]["margem_m"])
+            desenhos = _editor(
+                orto_run, (x0 - m, y0 - m, x1 + m, y1 + m), det_todos, linha.geometry,
+                f"corrigir:{run.name}:{alvo}:{n_edicao}",
+            )  # fmt: skip
+            c1, c2, c3, c4 = st.columns([1.2, 1, 1.2, 1.6])
+            if c1.button("Salvar contorno", type="primary", disabled=not desenhos, width="stretch"):
+                try:
+                    revisao.corrigir(run, alvo, desenhos)
+                except ValueError as erro:
+                    st.error(str(erro))
+                else:
+                    _refazer_recortes(run, orto_run, [int(alvo)], det_bruto, seg, params)
+                    st.session_state["n_edicao"] = n_edicao + 1
+                    st.rerun()
+            if linha.revisao != "manual":
+                c2.button(
+                    "✓ É defeito",
+                    on_click=_marcar,
+                    args=(run, int(alvo), "confirmado"),
+                    width="stretch",
+                )
+                c3.button(
+                    "✗ Falso positivo",
+                    on_click=_marcar,
+                    args=(run, int(alvo), "falso_positivo"),
+                    width="stretch",
+                )
+                if linha.revisao != "pendente" or linha.corrigido:
+                    c4.button(
+                        "Desfazer a revisão desta área",
+                        on_click=_desfazer,
+                        args=(run, int(alvo)),
+                        width="stretch",
+                    )
+            else:
+                c2.button("Remover área", on_click=_remover, args=(run, int(alvo)), width="stretch")
+
+    else:  # adicionar area que faltou
+        trechos = seg_f.sort_values("segmento")
+        rotulos = {
+            int(r.segmento): f"Segmento {int(r.segmento)} · {r.via}" for r in trechos.itertuples()
+        }
+        c1, c2 = st.columns([1.6, 1])
+        seg_alvo = c1.selectbox(
+            "Trecho onde falta uma área",
+            list(rotulos),
+            format_func=rotulos.get,
+            key=f"segadd:{run.name}",
+        )
+        classe_nova = c2.selectbox(
+            "Tipo de defeito", list(ROTULO_CLASSE), format_func=ROTULO_CLASSE.get
+        )
+        st.caption(
+            "Use a ferramenta de polígono (à esquerda do mapa) e contorne cada área que faltou; pode desenhar "
+            "várias. Em amarelo, as áreas que já existem. Depois clique em Adicionar."
+        )
+        x0, y0, x1, y1 = trechos[trechos["segmento"] == seg_alvo].geometry.iloc[0].bounds
+        m = float(params["recortes"]["margem_m"])
+        desenhos = _editor(
+            orto_run, (x0 - m, y0 - m, x1 + m, y1 + m), det_todos, None,
+            f"adicionar:{run.name}:{seg_alvo}:{n_edicao}",
+        )  # fmt: skip
+        if st.button(f"Adicionar {len(desenhos)} área(s)", type="primary", disabled=not desenhos):
+            proximo = int(det_bruto["id"].max()) + 1 if len(det_bruto) else 1
+            try:
+                criados = revisao.adicionar(run, desenhos, classe_nova, proximo)
+            except ValueError as erro:
+                st.error(str(erro))
+            else:
+                _refazer_recortes(run, orto_run, criados, det_bruto, seg, params)
+                st.session_state["n_edicao"] = n_edicao + 1
+                st.rerun()
+        manuais = det_todos[
+            (det_todos["revisao"] == "manual") & (det_todos["segmento"] == seg_alvo)
+        ]
+        for r in manuais.itertuples():
+            a1, a2 = st.columns([3, 1])
+            a1.caption(
+                f"**#{int(r.id)}** · {ROTULO_CLASSE.get(r.classe, r.classe)} · {fmt(r.area_m2)} m² · adicionada à mão"
+            )
+            a2.button(
+                "Remover",
+                key=f"rm2:{run.name}:{int(r.id)}",
+                on_click=_remover,
+                args=(run, int(r.id)),
+            )
 
 # ============================================================== orcamento
-with aba_orc:
+if aba == "Orçamento":
     if orc["placeholder"]:
         st.warning(
             "Os preços unitários são **ilustrativos**. Substitua pelos de referência (SICRO, SINAPI ou "
@@ -786,16 +1130,14 @@ with aba_orc:
         )
     p1, p2, p3, p4, p5 = st.columns(5)
     p1.selectbox("Revestimento", orcamento.PAVIMENTOS, key="orc_pavimento",
-                 index=orcamento.PAVIMENTOS.index(params["orcamento"]["pavimento"]))  # fmt: skip
+                 index=orcamento.PAVIMENTOS.index(salvo["pavimento"]))  # fmt: skip
     p2.selectbox("Terreno de fundação", orcamento.TERRENOS, key="orc_terreno",
-                 index=orcamento.TERRENOS.index(params["orcamento"]["terreno"]))  # fmt: skip
-    p3.number_input(
-        "BDI (%)", 0.0, 100.0, 100 * params["orcamento"]["bdi"], step=1.0, key="orc_bdi"
-    )
-    p4.number_input("Folga de corte (m)", 0.0, 1.0, float(params["orcamento"]["margem_corte_m"]),
-                    step=0.05, key="orc_margem")  # fmt: skip
-    p5.number_input("Recapear acima de (% do trecho)", 1.0, 100.0,
-                    100 * params["orcamento"]["limite_recapeamento"], step=1.0, key="orc_limite")  # fmt: skip
+                 index=orcamento.TERRENOS.index(salvo["terreno"]))  # fmt: skip
+    p3.number_input("BDI (%)", 0.0, 100.0, float(salvo["bdi"]), step=1.0, key="orc_bdi")
+    p4.number_input("Folga de corte (m)", 0.0, 1.0, float(salvo["margem"]), step=0.05,
+                    key="orc_margem", help="Vale para buracos. Revestimento perdido é orçado pela própria área.")  # fmt: skip
+    p5.number_input("Recapear acima de (% do trecho)", 1.0, 100.0, float(salvo["limite"]),
+                    step=1.0, key="orc_limite")  # fmt: skip
 
     t = orc["total"]
     k1, k2, k3, k4 = st.columns(4)
@@ -867,8 +1209,11 @@ with aba_orc:
             placeholder=editado["fonte"].fillna("").str.upper().isin(["PLACEHOLDER", ""])
         )
         if st.button("Aplicar preços"):
-            st.session_state["orc_precos_editados"] = editado
-            st.rerun()
+            if editado["preco_unit"].isna().any():
+                st.error("Há serviço sem preço. Preencha todos antes de aplicar.")
+            else:
+                st.session_state["orc_precos_editados"] = editado
+                st.rerun()
         st.caption(
             "Troque o preço e a fonte de cada serviço e clique em Aplicar. Vale para esta sessão; para fixar, edite `config/precos.csv`."
         )
@@ -880,16 +1225,21 @@ with aba_orc:
     )
 
 # ============================================================== dados e relatorio
-with aba_dados:
+if aba == "Dados e relatório":
     st.subheader("Relatório executivo")
     r1, r2 = st.columns([1, 3])
+    # assinatura do que esta na tela: muda com filtro, revisao ou orcamento
+    assinatura = (
+        run.name, len(det), round(float(det["area_m2"].sum()), 3) if len(det) else 0.0,
+        len(seg_f), round(orc["total"]["total"], 2), _carimbo_rev(run),
+    )  # fmt: skip
     if r1.button("Gerar relatório", type="primary", width="stretch"):
         st.session_state["relatorio"] = (
-            run.name,
+            assinatura,
             relatorio.gerar_html(run, det, seg_f, resumo, params, orc).encode("utf-8"),
         )
     pronto = st.session_state.get("relatorio")
-    if pronto and pronto[0] == run.name:
+    if pronto and pronto[0] == assinatura:
         r2.download_button(
             "Baixar relatório (HTML, pronto para imprimir em PDF)",
             pronto[1],
@@ -946,11 +1296,11 @@ with aba_dados:
     )
 
 # ============================================================== nova analise
-with aba_nova:
+if aba == "Nova análise":
     _nova_analise()
 
 # ============================================================== proximos passos
-with aba_passos:
+if aba == "Próximos passos":
     st.subheader("Do detector de hoje ao modelo treinado")
     st.markdown(
         "O detector atual **não usa aprendizado**: compara cada ponto com o pavimento em volta. "

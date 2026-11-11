@@ -44,7 +44,8 @@ class Params:
     solo_sobreposicao_max: float
     solo_janela_fundo_m: float
     solo_fundo_percentil: float
-    solo_area_max_m2: float
+    solo_k_mad: float
+    solo_peso_brilho: float
 
 
 def _disco(diametro_px: int) -> np.ndarray:
@@ -127,13 +128,16 @@ class DetectorClassico:
     """
 
     nome = "classico"
-    versao = "0.5.1"
+    versao = "0.5.2"
     limites = (
         "O detector compara cada ponto com o pavimento em volta, sem aprendizado. Procura duas "
         "coisas: anomalia escura (buraco) e cor de solo no meio do pavimento (revestimento "
         "perdido). Mancha de oleo, remendo escuro, tampa de bueiro, poca, sarjeta, sombra pequena "
         "e veiculo escuro aparecem como buraco; lama, areia e terra trazida por roda aparecem como "
-        "revestimento perdido. Use a confianca minima e a conferencia visual para separar os casos."
+        "revestimento perdido, assim como veiculo de cor quente e folha seca. O revestimento "
+        "perdido e medido contra o pavimento inteiro que sobrou em volta (janela de 6 m): trecho "
+        "que perdeu a capa na largura toda nao tem com o que comparar e pode sair como bom. Use a "
+        "confianca minima e a revisao manual para separar os casos."
     )
 
     def __init__(self, **params: float) -> None:
@@ -159,7 +163,7 @@ class DetectorClassico:
         # cor) ficam fora
         r, g, b = (img[..., k].astype(np.int16) for k in range(3))
         quente = r - b
-        solo = np.clip(cinza.astype(np.int16) // 2 + quente, 0, 255).astype(np.uint8)
+        solo = np.clip(p.solo_peso_brilho * cinza + quente, 0, 255).astype(np.uint8)
         sem_vegetacao = (2 * g - r - b) <= p.exg_max
         # solo e terra ficam entre o vermelho e o laranja; pintura amarela tem matiz maior
         matiz = 2.0 * cv2.cvtColor(img, cv2.COLOR_RGB2HSV)[..., 0]
@@ -175,9 +179,16 @@ class DetectorClassico:
         ocupado = np.zeros(valida.shape, dtype=bool)
         for d in saida:
             ocupado |= d.mascara
+        area_min_px = p.area_min_m2 / (gsd_m * gsd_m)
         for d in novas:  # a mesma regiao nao entra duas vezes
-            if (d.mascara & ocupado).sum() <= p.solo_sobreposicao_max * d.mascara.sum():
-                saida.append(d)
+            comum = d.mascara & ocupado
+            if comum.sum() > p.solo_sobreposicao_max * d.mascara.sum():
+                continue
+            if comum.any():  # tira do solo a parte que ja e buraco: area nao conta em dobro
+                d.mascara &= ~ocupado
+                if d.mascara.sum() < area_min_px:
+                    continue
+            saida.append(d)
         return saida
 
     def _passada(
@@ -199,8 +210,8 @@ class DetectorClassico:
         p = self.p
         janela = p.solo_janela_fundo_m if extensa else p.janela_fundo_m
         percentil = p.solo_fundo_percentil if extensa else p.fundo_percentil
-        area_max = p.solo_area_max_m2 if extensa else p.area_max_m2
-        k_mad = 0.0 if extensa else p.k_mad
+        area_max = float("inf") if extensa else p.area_max_m2
+        k_mad = p.solo_k_mad if extensa else p.k_mad
         px2 = gsd_m * gsd_m
         if valida.sum() * px2 < p.area_min_m2:
             return []

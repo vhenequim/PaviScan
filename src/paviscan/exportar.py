@@ -66,6 +66,31 @@ def previa(
     return [[b.bottom, b.left], [b.top, b.right]]
 
 
+def recorte(ds, geom, destino: Path, cfg: dict, escala: float = 1.0) -> bool:
+    """Grava em `destino` a miniatura de um defeito, com o contorno desenhado."""
+    tudo = Window(0, 0, ds.width, ds.height)
+    x0, y0, x1, y1 = geom.bounds
+    lado = max(x1 - x0, y1 - y0) + 2 * cfg["margem_m"]
+    lado = max(lado, cfg["lado_min_m"])
+    cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
+    jan = from_bounds(cx - lado / 2, cy - lado / 2, cx + lado / 2, cy + lado / 2, ds.transform)
+    jan = jan.round_offsets().round_lengths().intersection(tudo)
+    if jan.width < 2 or jan.height < 2:
+        return False
+    fator = int(cfg["lado_px"]) / max(jan.width, jan.height)
+    w, h = max(1, int(jan.width * fator)), max(1, int(jan.height * fator))
+    img = ds.read(
+        ingestao.bandas_rgb(ds), window=jan, out_shape=(3, h, w), resampling=Resampling.bilinear
+    )
+    img = np.ascontiguousarray(np.moveaxis(ingestao.para_uint8(img, escala), 0, -1))
+    inv = ~(transform_da_janela(jan, ds.transform) @ rasterio.Affine.scale(1 / fator))
+    for parte in geom.geoms if hasattr(geom, "geoms") else [geom]:
+        pts = np.array([inv @ xy for xy in parte.exterior.coords]).round().astype(np.int32)
+        cv2.polylines(img, [pts], True, (255, 40, 40), 1, cv2.LINE_AA)
+    cv2.imwrite(str(destino), cv2.cvtColor(img, cv2.COLOR_RGB2BGR), [cv2.IMWRITE_JPEG_QUALITY, 88])
+    return True
+
+
 def recortes(ds, defeitos: gpd.GeoDataFrame, saida: Path, cfg: dict, escala: float = 1.0) -> int:
     """Uma miniatura por buraco em recortes/<id>.jpg, com o contorno desenhado."""
     pasta = saida / "recortes"
@@ -75,32 +100,8 @@ def recortes(ds, defeitos: gpd.GeoDataFrame, saida: Path, cfg: dict, escala: flo
     if defeitos.empty:
         return 0
     escolhidos = defeitos.sort_values("area_m2", ascending=False).head(int(cfg["maximo"]))
-    lado_px = int(cfg["lado_px"])
-    tudo = Window(0, 0, ds.width, ds.height)
-    bandas = ingestao.bandas_rgb(ds)
     for ident, geom in zip(escolhidos["id"], escolhidos.geometry, strict=True):
-        x0, y0, x1, y1 = geom.bounds
-        lado = max(x1 - x0, y1 - y0) + 2 * cfg["margem_m"]
-        lado = max(lado, cfg["lado_min_m"])
-        cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
-        jan = from_bounds(cx - lado / 2, cy - lado / 2, cx + lado / 2, cy + lado / 2, ds.transform)
-        jan = jan.round_offsets().round_lengths().intersection(tudo)
-        if jan.width < 2 or jan.height < 2:
-            continue
-        fator = lado_px / max(jan.width, jan.height)
-        w, h = max(1, int(jan.width * fator)), max(1, int(jan.height * fator))
-        img = ds.read(bandas, window=jan, out_shape=(3, h, w), resampling=Resampling.bilinear)
-        img = np.ascontiguousarray(np.moveaxis(ingestao.para_uint8(img, escala), 0, -1))
-        inv = ~(transform_da_janela(jan, ds.transform) @ rasterio.Affine.scale(1 / fator))
-        partes = geom.geoms if hasattr(geom, "geoms") else [geom]
-        for parte in partes:
-            pts = np.array([inv @ xy for xy in parte.exterior.coords]).round().astype(np.int32)
-            cv2.polylines(img, [pts], True, (255, 40, 40), 1, cv2.LINE_AA)
-        cv2.imwrite(
-            str(pasta / f"{int(ident)}.jpg"),
-            cv2.cvtColor(img, cv2.COLOR_RGB2BGR),
-            [cv2.IMWRITE_JPEG_QUALITY, 88],
-        )
+        recorte(ds, geom, pasta / f"{int(ident)}.jpg", cfg, escala)
     return len(escolhidos)
 
 

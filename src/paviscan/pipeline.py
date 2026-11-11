@@ -167,6 +167,7 @@ def processar(
             previa_limites=limites,
             src=ds.crs.to_string(),
             ortofoto=orto.name,
+            ortofoto_caminho=str(orto.resolve()),
             largura_px=int(ds.width),
             altura_px=int(ds.height),
             cortadas_por_janela=cortadas,

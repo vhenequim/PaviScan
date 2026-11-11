@@ -146,6 +146,11 @@ def plano_recomendado(
     return itens[COLUNAS], escolha
 
 
+def trechos_a_recapear(orc: pd.DataFrame) -> int:
+    """Numero de segmentos que receberam a opcao C."""
+    return int(orc.loc[orc["opcao"] == "C", "id"].nunique())
+
+
 def totais(orc: pd.DataFrame, bdi: float) -> dict[str, dict[str, float]]:
     """Por opcao: custo direto, BDI (so no total) e total."""
     saida = {}

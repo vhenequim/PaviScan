@@ -82,20 +82,40 @@ Achados:
 - UAV-PDD2023 é quase só trinca (195 panelas em 11.158 anotações) e são fotos próximas, sem georreferência. Não serve para treinar detector de buraco sozinha.
 - No Querari o dano é revestimento perdido em faixas longas, mais claro que o asfalto velho e de cor de solo. O detector de "anomalia escura" achava 2 m²; a segunda passada acha 167 m² (10,9 % da pista), com contorno coerente nos recortes.
 
-Resultado (detector 0.5.1, preços ilustrativos):
+Resultado (detector 0.5.2, preços ilustrativos, antes de qualquer revisão manual):
 
 | Imagem | Pista | Defeitos | Área | % afetada | Buraco / Revest. perdido | Condição | Plano (ilustrativo) |
 |---|---|---|---|---|---|---|---|
-| Querari | 1.534 m² | 260 | 167,3 m² | 10,91 % | 2 / 258 | E | R$ 76,6 mil |
-| Tarumã | 11.976 m² | 635 | 157,9 m² | 1,32 % | 404 / 231 | B | R$ 163,0 mil |
-| Novo Aleixo | 8.312 m² | 537 | 110,1 m² | 1,33 % | 318 / 219 | B | R$ 98,3 mil |
+| Querari | 1.534 m² | 260 | 167,3 m² | 10,91 % | 2 / 258 | E · 12 | R$ 76,6 mil |
+| Tarumã | 11.976 m² | 635 | 157,5 m² | 1,32 % | 404 / 231 | B · 76 | R$ 162,8 mil |
+| Novo Aleixo | 8.312 m² | 539 | 109,7 m² | 1,32 % | 318 / 221 | B · 72 | R$ 98,2 mil |
+
+A condição acima já usa o índice corrigido (pedaço de revestimento perdido pesa só pela área). Com a regra anterior, Tarumã e Novo Aleixo davam C (68 e 60).
+
+No Querari, 7 dos 28 segmentos saem com conceito A ou B. Olhei quatro deles: três têm mesmo a superfície uniforme; o segmento 2 parece todo de terra e sai com A, que é o limite conhecido (trecho sem capa na largura toda não tem com o que comparar).
 
 O que não foi feito ou conferido nesta rodada:
-- **Não houve revisão do verificador** (a anterior custou três passadas). `verify.sh` passa: 50 unitários e 13 golden.
+- A revisão do verificador veio depois (ver "Parecer da rodada de produto", abaixo).
 - No navegador conferi as abas, o mapa 3D, o Querari e o mapa de desenho abrindo. **Não** exercitei de ponta a ponta, pela tela, o envio de arquivo, o traçado do eixo seguido de processamento, nem o botão do relatório; essas partes têm teste unitário ou foram rodadas pela linha de comando.
 - Nas imagens de Manaus a classe `solo_exposto` tem muito falso positivo (asfalto mais claro, calçada, concreto), com confiança baixa. O filtro "Tipo de defeito" permite desligar.
 - O Querari leva cerca de 4 min (reprojeção de EPSG:4326 durante a leitura).
 - Nada foi commitado.
+
+## Parecer da rodada de produto e revisão manual (11/11, fim do dia)
+
+O verificador reprovou a rodada de produto (uma passada, `verify.sh` OK). Graves, todos tratados:
+- Processar uma imagem com 2 ou mais levantamentos terminava em exceção na tela. Corrigido; há teste do painel para isso.
+- O teto de 80 m² do revestimento perdido valia por pedaço de janela e apagava o dano maior. Teto removido; há teste.
+- Trecho que perdeu a capa na largura toda não é detectado (não há pavimento inteiro para comparar). **Não corrigido**: está escrito no README e no texto de limites do detector.
+- Eu tinha anotado conceito B para Tarumã e Novo Aleixo; o código dava C. Corrigido na tabela abaixo.
+
+Menores tratados: relatório antigo oferecido depois de mudar o filtro; preço apagado virava NaN em silêncio; pedaço de região extensa contava como defeito na densidade do índice; área comum entre buraco e solo contava duas vezes; `stac_item.json` herdado ao substituir imagem; pasta vazia após envio inválido; `--eixo` ignorado quando já havia pista; superfície travada no modo "enviar arquivo"; tabelas de preço em cache sem validade; crédito imprimindo "None"; erros crus no eixo; constantes movidas para o `params.yaml`.
+
+Menores que ficaram: o painel ainda soma por conta própria em um ou outro ponto de exibição; a opção C orça sempre CBUQ (regra da tabela); não há teste do upload nem do desenho no mapa.
+
+**Revisão manual** (pedido do usuário): aba Inspeção com triagem (✓ defeito, ✗ falso positivo, ↺ pendente), correção de contorno e adição de áreas num mapa com a ortofoto em resolução cheia. `revisao.py` guarda tudo em `runs/<nome>/revisao.json`, sem alterar o que o detector gravou. Falso positivo sai dos indicadores, do orçamento e do relatório. As abas viraram navegação com chave: só a seção aberta é desenhada, e ela sobrevive a cada clique.
+
+Não conferido: o desenho e a edição de polígono no mapa só foram exercitados à mão em parte (ver a mensagem final da sessão); os testes automáticos cobrem o módulo e os botões de triagem.
 
 ## Decisões
 - 10/11: escopo reduzido a um retrato de uma imagem. Orçamento e série temporal saíram.

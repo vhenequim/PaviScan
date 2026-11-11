@@ -32,7 +32,8 @@ def run(
 
     if pista is None:
         pista = orto.parent / "pista.geojson"
-        if not pista.is_file():
+        # eixo ou superficie pedidos de forma explicita refazem a pista, mesmo que exista uma
+        if not pista.is_file() or eixo is not None or superficie != "asfalto":
             typer.echo("Sem --pista: gerando a pista pelos eixos de via...")
             pista_osm.gerar(orto, pista, config, eixo=eixo, superficie=superficie)
         typer.echo(f"Pista: {pista}")

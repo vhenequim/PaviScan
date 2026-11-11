@@ -1,6 +1,6 @@
 # PaviScan
 
-Pipeline em Python: ortofoto de pista asfaltada -> buracos como polígonos em UTM -> medidas e severidade -> indicadores por segmento -> dashboard Streamlit com filtros. Retrato de uma imagem só: sem orçamento e sem série temporal. Plano completo em `PLAN.md`. Estado atual em `PROGRESS.md` (leia no início de toda sessão, atualize no fim).
+Pipeline em Python: ortofoto de pista asfaltada -> buracos como polígonos em UTM -> medidas e severidade -> indicadores por segmento -> dashboard Streamlit com filtros. Retrato de uma imagem só, sem série temporal; com orçamento de reparo e revisão manual desde 11/11. Plano completo em `PLAN.md`. Estado atual em `PROGRESS.md` (leia no início de toda sessão, atualize no fim).
 
 ## Comandos
 
@@ -35,6 +35,7 @@ src/paviscan/
   orcamento.py    quantitativos e custo de reparo (tabelas em config/solucoes.csv e precos.csv)
   acervo.py       entrada de arquivos: uma pasta por ortofoto em dados/ (orto.tif, pista, eixo)
   relatorio.py    relatório executivo em HTML
+  revisao.py      revisão manual por levantamento (`runs/<nome>/revisao.json`), aplicada por cima do detector
   base_publica.py resumo e exemplos da base UAV-PDD2023 (só ilustração no painel)
 config/params.yaml
 tests/golden/     testes de aceite. BLOQUEADOS para edição

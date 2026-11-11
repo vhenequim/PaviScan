@@ -110,9 +110,13 @@ def _eixos(osm: dict, crs, quadro, cfg: dict) -> list[tuple[str, str, LineString
 
 def _eixos_de_arquivo(caminho: Path, crs, quadro, cfg: dict) -> list[tuple[str, str, LineString]]:
     """Eixos desenhados pelo usuario (GeoJSON de linhas), partidos em trechos retos."""
+    if not Path(caminho).is_file():
+        raise FileNotFoundError(f"arquivo do eixo nao encontrado: {caminho}")
     g = gpd.read_file(caminho)
     if g.crs is None:
         raise ValueError(f"{caminho} nao tem SRC")
+    if not set(g.geom_type.dropna()) <= {"LineString", "MultiLineString"}:
+        raise ValueError("o eixo da via precisa ser linha; poligono vai em --pista")
     g = g.to_crs(crs)
     col = next((c for c in ("nome", "name") if c in g.columns), None)
     eixos = []
