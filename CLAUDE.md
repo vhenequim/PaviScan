@@ -9,7 +9,9 @@ pip install -e ".[dev]"
 ./scripts/verify.sh            # lint + testes + golden. É a definição de pronto
 pytest tests/golden -q         # só os testes de aceite
 python -m paviscan.sintetico dados/sint --seed 7    # gera cena de teste com gabarito
-paviscan run --orto X.tif --pista pista.geojson --saida runs/nome
+paviscan run --orto X.tif --pista pista.geojson --saida runs/nome   # sem --pista: pista pelo OpenStreetMap
+paviscan pista --orto X.tif --saida pista.geojson   # só a pista automática
+paviscan oam <link ou id do OpenAerialMap> dados/nome   # baixa a ortofoto
 paviscan painel --runs runs/   # abre o dashboard
 ```
 
@@ -27,6 +29,9 @@ src/paviscan/
   painel/         M4  dados.py (funções puras) e app.py (Streamlit)
   pipeline.py     M1+ orquestra tudo
   cli.py          M1+ typer
+  config.py       leitura do params.yaml
+  pista_osm.py    extra: pista automática (eixos do OpenStreetMap + cor do asfalto)
+  oam.py          extra: baixa ortofoto do OpenAerialMap
 config/params.yaml
 tests/golden/     testes de aceite. BLOQUEADOS para edição
 tests/unit/       testes que você escreve
@@ -71,6 +76,8 @@ class Deteccao:
 - `largura_m` e `comprimento_m` são os lados do retângulo mínimo rotacionado (largura <= comprimento).
 - `severidade` vem dos limites de área em `config/params.yaml`.
 - `segmento` é o índice do trecho de `segmento_m` metros ao longo do eixo maior da pista em que cai o centroide do buraco.
+- A pista pode ter várias feições (uma por via). Cada uma é segmentada no próprio eixo; `segmento` é sequencial e `via` guarda o nome. `segmentos.geojson` também tem `via` e `comprimento_m`, e `defeitos.geojson` tem `via`.
+- `processar` aceita um quinto argumento opcional, `progresso(fracao, texto)`, usado pela CLI e pelo painel.
 - O detector é escolhido por `detector:` em `params.yaml`. Nada fora de `deteccao/` pode saber qual detector está rodando.
 
 ## Regras

@@ -3,15 +3,31 @@ detector: classico          # classico | yolo (futuro)
 tiles:
   tamanho_px: 1024
   sobreposicao_px: 128
+  sobreposicao_min_m: 4.0   # a sobreposicao nunca fica menor que isto; a janela cresce se preciso
+  margem_emenda_m: 1.0      # a menos disto da borda interna da janela o detector perde contexto.
+                            # objeto de ate (sobreposicao - 2 x margem) = 2 m sai inteiro de alguma
+                            # janela; maior que isso pode sair truncado e e marcado como na_emenda
+  duplicata_min: 0.2        # mesma deteccao em duas janelas: intersecao >= esta fracao da menor
 
 classico:
   janela_fundo_m: 2.0       # maior que o maior buraco esperado
   k_mad: 6.0                # limiar = mediana + k x MAD da anomalia
   contraste_min: 18         # piso do limiar, em niveis de cinza
   area_min_m2: 0.05
-  area_max_m2: 10.0
+  area_max_m2: 10.0         # acima de ~2 m nas duas dimensoes (janela_fundo_m) a medida e instavel
   solidez_min: 0.6
   alongamento_max: 4.0
+  suavizacao_m: 0.01        # desfoque gaussiano antes de tudo
+  margem_borda_m: 0.15      # faixa ignorada junto a borda da pista
+  morfologia_m: 0.03        # elemento da abertura e do fechamento
+  fundo_res_m: 0.10         # resolucao em que o fundo local e estimado
+  fundo_percentil: 50       # 50 = mediana local
+  borda_nitida_m: 0.04      # transicao ate aqui conta como borda nitida (confianca cheia)
+  borda_suave_m: 0.30       # transicao a partir daqui conta como borda suave (sombra, mancha)
+  contraste_cheio: 3.0      # contraste, em multiplos do limiar, que da confianca cheia
+  solidez_cheia: 0.92       # solidez a partir da qual a forma da confianca cheia
+  croma_max: 40             # max - min dos canais RGB; acima disso o pixel nao e asfalto
+  separacao_nucleo: 0.6     # watershed: nucleo = distancia a borda >= esta fracao da maior da regiao
 
 severidade:                 # por area do buraco, em m2. Faixas de trabalho, nao sao de norma
   media_a_partir_de: 0.25
@@ -19,3 +35,45 @@ severidade:                 # por area do buraco, em m2. Faixas de trabalho, nao
 
 segmentos:
   comprimento_m: 20
+  resto_min_m: 5            # sobra menor que isto no fim do trecho entra no ultimo segmento
+
+raster:
+  percentil_branco: 99.5    # raster que nao e uint8: este percentil vira 255, igual na imagem toda
+  amostra_px: 1024          # lado da amostra reduzida em que o percentil e medido
+
+pista:
+  res_recorte_m: 0.25       # resolucao em que a area com dado da ortofoto e medida para recortar a pista
+  aviso_sobreposicao: 0.01  # avisa quando trechos sobrepostos passam desta fracao da area da pista
+
+moldura:                    # ortofoto gravada sem mascara: moldura lisa ligada aos cantos nao e dado
+  branco_min: 250
+  preto_max: 5
+  tolerancia: 4
+  franja_px: 2              # franja da reprojecao em volta da area sem dado, na previa
+
+previa:
+  largura_max_px: 4000
+
+recortes:                   # miniatura de cada buraco para conferencia no painel
+  margem_m: 1.5
+  lado_min_m: 4.0
+  lado_px: 360
+  maximo: 600
+
+pista_osm:                  # pista automatica: eixos do OpenStreetMap + cor do asfalto
+  classes: [motorway, trunk, primary, secondary, tertiary, unclassified, residential, living_street]
+  meia_largura_m:           # corredor em volta do eixo; a cor do asfalto define a borda real
+    padrao: 3.4
+    primary: 6.5
+    secondary: 5.5
+    tertiary: 4.5
+  res_m: 0.15               # resolucao da mascara de asfalto
+  faixa_referencia_m: 1.0   # meia largura da faixa no eixo onde o brilho do asfalto e medido
+  pixels_referencia_min: 20 # com menos pixels cinzentos que isto no eixo, o trecho e ignorado
+  saturacao_max: 0.22       # asfalto e cinza: saturacao HSV baixa (0 a 1)
+  tolerancia_brilho: 0.13   # desvio de brilho HSV aceito em torno do asfalto do eixo (0 a 1)
+  limpeza_m: 0.45           # abertura que solta calcada e ruido
+  buraco_max_m2: 4.0        # furo interno menor que isto volta a ser pista (buraco, bueiro, pintura)
+  dobra_max_graus: 30       # o eixo e partido em trechos retos nas curvas maiores que isto
+  trecho_min_m: 12
+  area_min_m2: 15
