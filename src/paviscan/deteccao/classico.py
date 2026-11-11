@@ -45,6 +45,11 @@ class Params:
     solo_janela_fundo_m: float
     solo_fundo_percentil: float
     solo_k_mad: float
+    sombra_quente_max: float
+    sombra_fracao_brilho: float
+    sombra_percentil_claro: float
+    terra_croma_min: float
+    terra_fracao_min: float
     solo_peso_brilho: float
 
 
@@ -128,7 +133,7 @@ class DetectorClassico:
     """
 
     nome = "classico"
-    versao = "0.5.2"
+    versao = "0.6.1"
     limites = (
         "O detector compara cada ponto com o pavimento em volta, sem aprendizado. Procura duas "
         "coisas: anomalia escura (buraco) e cor de solo no meio do pavimento (revestimento "
@@ -137,7 +142,9 @@ class DetectorClassico:
         "revestimento perdido, assim como veiculo de cor quente e folha seca. O revestimento "
         "perdido e medido contra o pavimento inteiro que sobrou em volta (janela de 6 m): trecho "
         "que perdeu a capa na largura toda nao tem com o que comparar e pode sair como bom. Use a "
-        "confianca minima e a revisao manual para separar os casos."
+        "confianca minima e a revisao manual para separar os casos. Em via de terra so se procura "
+        "anomalia escura (buraco, poca, sulco com sombra): nao ha revestimento para perder, e "
+        "sombra de vegetacao na beira da via tambem aparece."
     )
 
     def __init__(self, **params: float) -> None:
@@ -147,29 +154,39 @@ class DetectorClassico:
         p = self.p
         img = np.ascontiguousarray(img)
         valida = np.asarray(valida, dtype=bool)
-        # 1a passada, buraco escuro. Asfalto e cinza: pixel colorido (vegetacao, veiculo,
-        # pintura, solo) sai da analise
         croma = img.max(axis=2).astype(np.int16) - img.min(axis=2)
         cinza = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
-        saida = self._passada(
-            cinza, valida & (croma <= p.croma_max), gsd_m, p.contraste_min, "panela"
+        r, g, b = (img[..., k].astype(np.int16) for k in range(3))
+        sem_vegetacao = (2 * g - r - b) <= p.exg_max
+        # via de terra: quase toda a pista da janela tem cor forte de solo. Ali nao existe
+        # revestimento para perder, e o filtro "asfalto e cinza" jogaria a via inteira fora
+        de_terra = (
+            bool(valida.any())
+            and float((croma[valida] >= p.terra_croma_min).mean()) >= p.terra_fracao_min
         )
-        if not p.solo_exposto:
+        # 1a passada, buraco escuro. No asfalto, pixel colorido (vegetacao, veiculo, pintura,
+        # solo) sai da analise; na terra, sai so a vegetacao
+        analisavel = sem_vegetacao if de_terra else croma <= p.croma_max
+        saida = self._passada(cinza, valida & analisavel, gsd_m, p.contraste_min, "panela")
+        if not p.solo_exposto or de_terra:
             return saida
         # 2a passada, revestimento perdido: onde a capa saiu aparece base ou solo, mais claro
         # e mais "quente" (R - B alto) que o pavimento em volta. Forma faixas longas e
         # irregulares, entao mede-se a area, sem filtro de forma, contra o pavimento mais
         # escuro de uma janela larga. Vegetacao (verde dominante) e pintura (clara, mas sem
         # cor) ficam fora
-        r, g, b = (img[..., k].astype(np.int16) for k in range(3))
         quente = r - b
         solo = np.clip(p.solo_peso_brilho * cinza + quente, 0, 255).astype(np.uint8)
-        sem_vegetacao = (2 * g - r - b) <= p.exg_max
+        # sombra longa (sol baixo): escura e sem cor quente, porque a luz do ceu e azulada. Fica
+        # fora desta passada; senao o pavimento ao sol, ao lado da sombra, pareceria "mais claro
+        # e mais quente que o entorno" e viraria revestimento perdido
+        claro = float(np.percentile(cinza[valida], p.sombra_percentil_claro)) if valida.any() else 0
+        sombra = (quente <= p.sombra_quente_max) & (cinza <= p.sombra_fracao_brilho * claro)
         # solo e terra ficam entre o vermelho e o laranja; pintura amarela tem matiz maior
         matiz = 2.0 * cv2.cvtColor(img, cv2.COLOR_RGB2HSV)[..., 0]
         novas = self._passada(
             255 - solo,
-            valida & sem_vegetacao,
+            valida & sem_vegetacao & ~sombra,
             gsd_m,
             p.solo_contraste_min,
             "solo_exposto",

@@ -117,6 +117,26 @@ Menores que ficaram: o painel ainda soma por conta própria em um ou outro ponto
 
 Não conferido: o desenho e a edição de polígono no mapa só foram exercitados à mão em parte (ver a mensagem final da sessão); os testes automáticos cobrem o módulo e os botões de triagem.
 
+## Erro ao processar pela tela e via de terra (11/11, noite)
+
+- O usuário processou uma imagem nova (Uiramutã, 6º PEF) e a tela terminou em `StreamlitWidgetAlreadyInstantiatedError`: ao corrigir o seletor de levantamento eu repeti o defeito na chave da navegação (`aba`). Corrigido com chave pendente; agora há um teste que clica em Processar de verdade e que falha no código anterior.
+- O levantamento do Uiramutã tinha saído com 0 defeitos e 74 m² de pista. Causas: a estrada principal é de terra vermelha (o modo asfalto procura cinza) e as ruas internas do pelotão são `service` no OpenStreetMap, classe que ficava de fora.
+- Mudanças: superfície `auto` por padrão, decidida via por via (`pista_osm.cobertura_asfalto_min`); classes `service` e `track` entram na pista automática; o detector trata como via de terra a janela cuja pista tem cor forte de solo (`classico.terra_croma_min`, `terra_fracao_min`), e ali procura só anomalia escura. Detector 0.6.0.
+- A imagem do Uiramutã foi feita com sol baixo. No asfalto das ruas internas, a parte ao sol ao lado de uma sombra longa saía como "revestimento perdido". O detector agora tira a sombra (escura e sem cor quente) dessa passada (`classico.sombra_*`). Detector 0.6.1. Reduziu, não zerou: sobram manchas claras de areia e poeira sobre o asfalto e bordas de sombra, quase todas com confiança abaixo de 0,35.
+- No que acerta: os sulcos de erosão na beira da estrada de terra saem bem contornados. No que erra: sombra de árvore sobre a terra vira buraco.
+
+Resultado final de todos os levantamentos (detector 0.6.1, preços ilustrativos, sem revisão manual):
+
+| Imagem | Pista | Defeitos | Área | % afetada | Buraco / Revest. perdido | Condição |
+|---|---|---|---|---|---|---|
+| Uiramutã | 13.357 m² | 917 | 388,9 m² | 2,91 % | 648 / 269 | D · 40 |
+| Uiramutã, confiança >= 0,5 | 13.357 m² | 517 | 169 m² | 1,27 % | 477 / 40 | C · 63 |
+| Querari | 1.534 m² | 260 | 165,5 m² | 10,79 % | 2 / 258 | E · 13 |
+| Tarumã | 11.976 m² | 618 | 152,4 m² | 1,27 % | 404 / 214 | B · 76 |
+| Novo Aleixo | 8.312 m² | 526 | 107,3 m² | 1,29 % | 318 / 208 | B · 72 |
+
+O Uiramutã processa em cerca de 2 min; a geração da pista automática leva mais 3 min (arquivo de 1,2 GB sem pirâmides).
+
 ## Decisões
 - 10/11: escopo reduzido a um retrato de uma imagem. Orçamento e série temporal saíram.
 - 10/11: detector por anomalia escura local com limiar robusto (mediana + k x MAD), não Otsu nem watershed puro. YOLO do mestrado entra depois pela interface `Detector`.

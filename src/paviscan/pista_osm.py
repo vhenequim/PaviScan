@@ -153,16 +153,18 @@ def gerar(
     config: Path | None = None,
     vias: Path | None = None,
     eixo: Path | None = None,
-    superficie: str = "asfalto",
+    superficie: str = "auto",
 ) -> Path:
     """Grava `saida` (GeoJSON no SRC da ortofoto) com um poligono de pista por trecho de via.
 
     Os eixos vem de `eixo` (linhas desenhadas pelo usuario) ou, sem ele, do OpenStreetMap.
     `superficie` diz como achar a borda real em volta do eixo: "asfalto" (cinza, com brilho
-    parecido com o do eixo) ou "terra" (tudo que nao e vegetacao: serve para via de terra
-    ou de revestimento muito gasto).
+    parecido com o do eixo), "terra" (tudo que nao e vegetacao: serve para via de terra ou
+    de revestimento muito gasto) ou "auto", que decide via por via: fica asfalto se pelo
+    menos `cobertura_asfalto_min` do corredor tem cor de asfalto, senao terra. A escolha de
+    cada trecho sai na coluna `superficie` do arquivo.
     """
-    if superficie not in ("asfalto", "terra"):
+    if superficie not in ("auto", "asfalto", "terra"):
         raise ValueError(f"superficie desconhecida: {superficie}")
     orto, saida = Path(orto), Path(saida)
     params = config_mod.carregar(config)
@@ -214,21 +216,32 @@ def gerar(
         return rasterize([geom], out_shape=(h, w), transform=tf, fill=0).astype(bool)
 
     larguras = cfg["meia_largura_m"]
-    corredores, asfalto, miolo = [], np.zeros((h, w), bool), np.zeros((h, w), bool)
+    corredores, usadas = [], []
+    asfalto, miolo = np.zeros((h, w), bool), np.zeros((h, w), bool)
     for _, classe, linha in eixos:
         corredor = raster(linha.buffer(larguras.get(classe, larguras["padrao"]), cap_style="flat"))
         perto = raster(linha.buffer(cfg["faixa_referencia_m"], cap_style="flat"))
         corredores.append(corredor)
-        if superficie == "terra":  # a via e tudo que nao e vegetacao em volta do eixo
+        candidato = None
+        if superficie != "terra":
+            ref = brilho[perto & cinzento]
+            if ref.size >= cfg["pixels_referencia_min"]:
+                # brilho do asfalto medido no proprio eixo da via; a borda real vem da cor
+                v0 = float(np.median(ref))
+                candidato = corredor & cinzento & (np.abs(brilho - v0) <= cfg["tolerancia_brilho"])
+        usada = superficie
+        if superficie == "auto":
+            # cada via decide sozinha: se pouco do corredor tem cor de asfalto, ela e de terra
+            base = int((corredor & com_dado).sum())
+            cobertura = float(candidato.sum()) / base if candidato is not None and base else 0.0
+            usada = "asfalto" if cobertura >= cfg["cobertura_asfalto_min"] else "terra"
+        usadas.append(usada)
+        if usada == "terra":  # a via e tudo que nao e vegetacao em volta do eixo
             asfalto |= corredor & sem_vegetacao
-            miolo |= perto
+        elif candidato is not None:
+            asfalto |= candidato
+        else:
             continue
-        ref = brilho[perto & cinzento]
-        if ref.size < cfg["pixels_referencia_min"]:
-            continue
-        # brilho do asfalto medido no proprio eixo da via; a borda real vem da cor
-        v0 = float(np.median(ref))
-        asfalto |= corredor & cinzento & (np.abs(brilho - v0) <= cfg["tolerancia_brilho"])
         miolo |= perto
 
     d = max(3, int(round(cfg["limpeza_m"] / res)) | 1)
@@ -250,7 +263,15 @@ def gerar(
         if pol.area < cfg["area_min_m2"]:
             continue
         nome, classe, _ = eixos[i - 1]
-        linhas.append({"nome": nome, "classe": classe, "fonte": fonte, "geometry": pol})
+        linhas.append(
+            {
+                "nome": nome,
+                "classe": classe,
+                "superficie": usadas[i - 1],
+                "fonte": fonte,
+                "geometry": pol,
+            }
+        )
     if not linhas:
         raise RuntimeError("nenhum trecho de pista encontrado em volta dos eixos")
     saida.parent.mkdir(parents=True, exist_ok=True)

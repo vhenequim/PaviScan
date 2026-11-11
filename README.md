@@ -20,7 +20,7 @@ paviscan painel --runs runs/
 Na aba **Nova análise**:
 
 1. **Imagem.** Envie o GeoTIFF (até 4 GB) ou aponte o caminho do arquivo no disco. A imagem é conferida e guardada no acervo (`dados/<nome>/orto.tif`) e pode ser reprocessada depois.
-2. **Onde está a via.** Três caminhos: automático pelas ruas do OpenStreetMap; desenhar o eixo da via em cima da imagem; ou enviar um arquivo (polígono da pista ou linha do eixo). Escolha a superfície: asfalto de cor normal, ou via muito gasta ou de terra.
+2. **Onde está a via.** Três caminhos: automático pelas ruas do OpenStreetMap; desenhar o eixo da via em cima da imagem; ou enviar um arquivo (polígono da pista ou linha do eixo). A superfície fica em "automática" por padrão: cada via é tratada como asfalto se pelo menos 30 % do seu corredor tem cor de asfalto, senão como terra. Dá para forçar asfalto ou terra.
 3. **Processar.** Leva de 30 s a alguns minutos, conforme o tamanho e o formato da imagem.
 
 O modo automático envia o retângulo geográfico da imagem ao servidor público do OpenStreetMap. Nos outros dois nada sai da máquina.
@@ -54,7 +54,7 @@ Falso positivo sai dos indicadores, do orçamento e do relatório (há uma chave
 |---|---|
 | `paviscan run --orto X.tif --saida runs/nome` | Pipeline completo, com a pista pelo OpenStreetMap |
 | `paviscan run --orto X.tif --pista P.geojson --saida runs/nome` | Com o polígono da pista desenhado por você |
-| `paviscan run --orto X.tif --eixo E.geojson --superficie terra --saida runs/nome` | Com o eixo da via desenhado (via gasta ou de terra) |
+| `paviscan run --orto X.tif --eixo E.geojson --superficie terra --saida runs/nome` | Com o eixo da via desenhado; `--superficie` aceita `auto` (padrão), `asfalto` ou `terra` |
 | `paviscan pista --orto X.tif --saida P.geojson [--eixo E.geojson] [--superficie terra]` | Só gera a pista |
 | `paviscan oam <link ou id> <pasta>` | Baixa uma ortofoto do OpenAerialMap |
 | `paviscan sintetico <pasta> --seed 7` | Cena sintética com gabarito |
@@ -65,6 +65,7 @@ Imagens de trabalho:
 | Pasta | Local | GSD | Origem |
 |---|---|---|---|
 | `dados/querari` | Querari (AM), via de asfalto muito gasto | 2,7 cm | ortofoto própria, em graus e com banda alfa; eixo desenhado em `eixo.geojson` |
+| `dados/Uiramut__6_PEF_Ortomosaic` | Uiramutã (RR), estrada de terra e ruas internas | 3,3 cm | ortofoto própria; pista automática, com superfície decidida por via |
 | `dados/taruma` | Tarumã, Manaus | 3,0 cm | OpenAerialMap `6a7f68e477ca9598cc9fe89b`, CC-BY 4.0 |
 | `dados/novo_aleixo` | Novo Aleixo, Manaus | 1,8 cm | OpenAerialMap `6a7f6f8d77ca9598cc9ff5d2`, CC-BY 4.0 |
 | `dados/sint/cena` | cena sintética | 2,0 cm | `paviscan sintetico` |
@@ -87,6 +88,8 @@ Sem aprendizado: cada ponto é comparado com o pavimento em volta, com limiar ro
 - **Buraco** (`panela`): anomalia escura contra a mediana de uma janela de 2 m, com filtros de forma (área, solidez, alongamento).
 - **Revestimento perdido** (`solo_exposto`): área mais clara e de cor de solo (do vermelho ao laranja) contra o pavimento mais escuro de uma janela de 6 m. Mede área, sem filtro de forma, porque esse dano forma faixas longas; os pedaços são unidos entre janelas e repartidos pelos segmentos.
 
+**Via de terra.** Quando a maior parte da pista de uma janela tem cor forte de solo, a janela é tratada como via de terra: o filtro "asfalto é cinza" é trocado pelo de vegetação, e só se procura anomalia escura (buraco, poça, sulco com sombra). Não existe revestimento para perder numa via que já é solo.
+
 A confiança junta contraste e nitidez da borda (e forma compacta, no buraco). Todos os limiares estão em `config/params.yaml`.
 
 Na cena sintética (sementes 7, 11, 23, 42; GSD de 2, 3 e 5 cm): recall de 100 %, zero falso positivo, erro mediano de área de 3 a 6 %, zero detecção em pista limpa.
@@ -101,15 +104,17 @@ Na cena sintética (sementes 7, 11, 23, 42; GSD de 2, 3 e 5 cm): recall de 100 %
 ## Limites, para dizer na apresentação
 
 - **Trecho que perdeu o revestimento na largura toda pode sair como bom.** O revestimento perdido é medido contra o pavimento inteiro que sobrou em volta, numa janela de 6 m. Se não sobrou pelo menos um quinto de pavimento inteiro nessa janela, não há com o que comparar: num teste com uma faixa de 6,4 m de largura toda sem capa, só as pontas foram medidas (17 % da área). Confira à mão, na aba Inspeção, os trechos de via muito gasta que saírem com conceito bom, e use "Adicionar área que faltou".
+- **Imagem feita com sol baixo traz sombra longa, e sombra engana o método.** No asfalto, a sombra é retirada da busca por revestimento perdido, mas a borda dela e manchas claras de areia ainda aparecem, em geral com confiança abaixo de 0,35. Na estrada de terra, sombra de árvore aparece como buraco. Prefira voar perto do meio-dia; com imagem assim, use confiança mínima de 0,5 e a revisão manual.
 - Os números são candidatos a defeito. Mancha de óleo, remendo escuro, sarjeta, sombra pequena e veículo escuro aparecem como buraco; lama, areia, calçada, concreto de cor quente, veículo de cor quente e folha seca aparecem como revestimento perdido. Nas imagens de Manaus a maior parte dos candidatos é isso. No Querari, onde o dano é extenso e visível, o contorno acompanha bem as áreas sem capa. O filtro de confiança e a aba Inspeção existem para essa triagem.
 - O custo herda esses erros e usa preços ilustrativos: serve para mostrar o método, não para fechar contrato.
 - O detector serve para buracos de até cerca de 2 m. A imagem é processada em janelas que se sobrepõem 4 m; a menos de 1 m da borda de uma janela o detector perde contexto, então a detecção ali fica para a janela vizinha. Buraco de até 2 m sai sempre inteiro de alguma janela. Acima disso ele pode sair truncado ou dividido: em geral fica a maior versão vista, marcada na coluna `na_emenda`, com aviso no processamento, no painel e em `cortadas_por_janela` do `resumo.json`. A marca não cobre tudo: objeto com mais de 2 m nas duas dimensões, objeto muito longo (6 m) e buraco grande que o detector divide em partes podem sair errados ou pela metade sem marca nenhuma.
 - O resultado depende um pouco da grade de janelas, porque o limiar e o fundo são calculados por janela. Trocando o tamanho da janela nas imagens de Manaus, os totais mudaram de 1 a 5 % e cerca de 12 % dos candidatos fracos entraram ou saíram.
-- A pista automática depende do OpenStreetMap estar alinhado com a ortofoto. Onde não há rua mapeada (caso do Querari), desenhe o eixo. A pista é segmentada pelo eixo de cada trecho reto.
+- A pista automática depende do OpenStreetMap estar alinhado com a ortofoto. Onde não há rua mapeada (caso do Querari), desenhe o eixo. A pista é segmentada pelo eixo de cada trecho reto. Entram ruas, estradas, vias de serviço (ruas internas de quartel e condomínio) e trilhas de veículo mapeadas.
+- Em via de terra, a pista é tudo que não é vegetação nem telhado claro em volta do eixo: acostamento e pátio de terra encostados na via entram junto. Sombra de árvore na beira aparece como buraco.
 - Eixo desenhado fora do centro da via perde parte da pista no modo asfalto (1,5 m de desvio tirou 17 % da pista num teste). No modo terra, o acostamento sem vegetação entra como pista (cerca de 10 % a mais no mesmo teste).
 - Região de revestimento perdido que cai fora de todos os segmentos, ou pedaço menor que 0,05 m² depois de repartido, é descartada sem aviso.
 - Severidade por área, em três faixas de trabalho. Não é classificação de norma.
-- Imagem em graus (EPSG:4326) é reprojetada durante a leitura, o que deixa o processamento bem mais lento (cerca de 4 min no Querari, contra 30 s nas imagens já em UTM).
+- Imagem em graus (EPSG:4326) é reprojetada durante a leitura, o que deixa o processamento bem mais lento (cerca de 4 min no Querari, contra 30 s nas imagens já em UTM). GeoTIFF sem pirâmides e gravado em faixas, como o do Uiramutã (1,2 GB), também é lento: só a geração da pista leva 3 min. Regravar a imagem como COG (com blocos e pirâmides) resolve.
 - Fora do escopo: comparação entre datas, profundidade, trincas.
 
 ## Créditos dos dados

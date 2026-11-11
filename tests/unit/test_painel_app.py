@@ -209,3 +209,67 @@ def test_processar_pela_tela_abre_o_levantamento_novo_sem_erro(dois_runs, tmp_pa
     at.session_state["aba"] = "Inspeção"
     at.run()
     assert not at.exception, at.exception
+
+
+def _cena_de_terra(pasta: Path, com_buraco: bool = True):
+    """Estrada de laterita (vermelha) entre vegetacao, com um buraco escuro no meio."""
+    import rasterio
+    from rasterio.transform import from_origin
+
+    rng = np.random.default_rng(9)
+    h, w, gsd = 400, 1200, 0.05  # 20 m x 60 m
+    img = np.empty((3, h, w), np.uint8)
+    for k, base in enumerate((70, 120, 55)):  # vegetacao
+        img[k] = (base + 6 * rng.standard_normal((h, w))).clip(0, 255)
+    for k, base in enumerate((215, 170, 140)):  # estrada de terra de 7 m no meio
+        img[k, 130:270] = (base + 5 * rng.standard_normal((140, w))).clip(0, 255)
+    if com_buraco:
+        yy, xx = np.mgrid[:h, :w]
+        img[:, (yy - 200) ** 2 + (xx - 600) ** 2 <= 12**2] = np.array([[95], [70], [55]])
+    pasta.mkdir(parents=True, exist_ok=True)
+    tf = from_origin(830000.0, 9660000.0, gsd, gsd)
+    perfil = dict(driver="GTiff", count=3, dtype="uint8", height=h, width=w, crs="EPSG:31980",
+                  transform=tf)  # fmt: skip
+    with rasterio.open(pasta / "orto.tif", "w", **perfil) as dst:
+        dst.write(img)
+    eixo = LineString([(830001.0, 9660000.0 - 10.0), (830059.0, 9660000.0 - 10.0)])
+    gpd.GeoDataFrame({"nome": ["Estrada"]}, geometry=[eixo], crs="EPSG:31980").to_file(
+        pasta / "eixo.geojson", driver="GeoJSON"
+    )
+    return pasta
+
+
+def test_superficie_automatica_reconhece_via_de_terra_e_de_asfalto(tmp_path):
+    terra = _cena_de_terra(tmp_path / "terra")
+    pista = gpd.read_file(pista_osm.gerar(terra / "orto.tif", terra / "pista.geojson",
+                                          eixo=terra / "eixo.geojson"))  # fmt: skip
+    assert set(pista["superficie"]) == {"terra"}
+    assert 0.8 * 7 * 58 < pista.geometry.area.sum() < 1.25 * 7 * 58  # a estrada de 7 m, nao o mato
+    # no modo asfalto a mesma estrada nao e achada: e o que acontecia antes
+    with pytest.raises(RuntimeError):
+        pista_osm.gerar(terra / "orto.tif", tmp_path / "p.geojson", eixo=terra / "eixo.geojson",
+                        superficie="asfalto")  # fmt: skip
+    # via de asfalto continua asfalto no modo automatico
+    cena = sintetico.gerar_cena(tmp_path / "c", n_buracos=0, gsd=0.05, comprimento_m=40.0, seed=2)
+    x0, y0, x1, y1 = gpd.read_file(cena / "pista.geojson").total_bounds
+    meio = LineString([(x0 + 1, (y0 + y1) / 2), (x1 - 1, (y0 + y1) / 2)])
+    gpd.GeoDataFrame(geometry=[meio], crs="EPSG:31980").to_file(
+        tmp_path / "e.geojson", driver="GeoJSON"
+    )
+    asfalto = gpd.read_file(pista_osm.gerar(cena / "orto.tif", tmp_path / "pa.geojson",
+                                            eixo=tmp_path / "e.geojson"))  # fmt: skip
+    assert set(asfalto["superficie"]) == {"asfalto"}
+
+
+def test_buraco_em_via_de_terra_e_detectado_e_nao_ha_revestimento_perdido(tmp_path):
+    terra = _cena_de_terra(tmp_path / "terra")
+    pista_osm.gerar(terra / "orto.tif", terra / "pista.geojson", eixo=terra / "eixo.geojson")
+    saida = pipeline.processar(terra / "orto.tif", terra / "pista.geojson", tmp_path / "run")
+    det = gpd.read_file(saida / "defeitos.geojson")
+    assert list(det["classe"]) == ["panela"]  # o buraco; nada de "solo exposto" numa via que e solo
+    real = np.pi * (12 * 0.05) ** 2
+    assert abs(det["area_m2"].iloc[0] - real) / real < 0.25
+    limpa = _cena_de_terra(tmp_path / "limpa", com_buraco=False)
+    pista_osm.gerar(limpa / "orto.tif", limpa / "pista.geojson", eixo=limpa / "eixo.geojson")
+    saida = pipeline.processar(limpa / "orto.tif", limpa / "pista.geojson", tmp_path / "run2")
+    assert len(gpd.read_file(saida / "defeitos.geojson")) == 0

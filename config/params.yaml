@@ -28,6 +28,8 @@ classico:
   solidez_cheia: 0.92       # solidez a partir da qual a forma da confianca cheia
   croma_max: 40             # max - min dos canais RGB; acima disso o pixel nao e asfalto
   separacao_nucleo: 0.6     # watershed: nucleo = distancia a borda >= esta fracao da maior da regiao
+  terra_croma_min: 60       # via de terra: pixel com max - min dos canais a partir disto tem cor forte de solo
+  terra_fracao_min: 0.5     # ... e a janela e tratada como via de terra se essa fracao da pista for assim
   solo_exposto: true        # segunda passada: revestimento perdido (cor de solo no meio do pavimento)
   solo_contraste_min: 30    # contraste minimo da segunda passada, no sinal (peso x cinza + R - B)
   solo_peso_brilho: 0.5     # peso do brilho no sinal de solo; o resto e a cor (R - B)
@@ -36,6 +38,9 @@ classico:
   solo_matiz_max: 42        # matiz maximo em graus: solo vai do vermelho ao laranja; pintura amarela passa disso
   exg_max: 20               # 2G - R - B acima disto e vegetacao e fica fora da segunda passada
   solo_sobreposicao_max: 0.5  # regiao ja marcada como buraco nao entra de novo como solo exposto
+  sombra_quente_max: 8      # sombra: R - B ate isto (sem cor quente) ...
+  sombra_fracao_brilho: 0.6 # ... e brilho ate esta fracao do pavimento claro da janela
+  sombra_percentil_claro: 90  # "pavimento claro" = este percentil do brilho da pista na janela
   solo_janela_fundo_m: 6.0  # o revestimento perdido forma faixas largas: janela de fundo maior
   solo_fundo_percentil: 80  # fundo = pavimento mais "frio" da janela (basta 20 % de pavimento inteiro)
 
@@ -72,17 +77,21 @@ recortes:                   # miniatura de cada buraco para conferencia no paine
   maximo: 600
 
 pista_osm:                  # pista automatica: eixos do OpenStreetMap + cor do asfalto
-  classes: [motorway, trunk, primary, secondary, tertiary, unclassified, residential, living_street]
+  classes: [motorway, trunk, primary, secondary, tertiary, unclassified, residential, living_street,
+            service, track]  # service e track: ruas internas de quartel, condominio e estrada de terra
   meia_largura_m:           # corredor em volta do eixo; a cor do asfalto define a borda real
     padrao: 3.4
     desenhado: 4.0          # eixo desenhado pelo usuario
     primary: 6.5
     secondary: 5.5
     tertiary: 4.5
+    service: 3.0
+    track: 2.5
   res_m: 0.15               # resolucao da mascara de asfalto
   faixa_referencia_m: 1.0   # meia largura da faixa no eixo onde o brilho do asfalto e medido
   pixels_referencia_min: 20 # com menos pixels cinzentos que isto no eixo, o trecho e ignorado
   saturacao_max: 0.22       # asfalto e cinza: saturacao HSV baixa (0 a 1)
+  cobertura_asfalto_min: 0.3  # superficie "auto": com menos que isto do corredor em cor de asfalto, a via e de terra
   exg_max: 20               # superficie "terra": 2G - R - B ate isto nao e vegetacao
   brilho_claro: 0.72        # superficie "terra": mais claro que isto e sem cor e telhado ou concreto
   tolerancia_brilho: 0.13   # desvio de brilho HSV aceito em torno do asfalto do eixo (0 a 1)

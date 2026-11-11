@@ -526,8 +526,9 @@ def _nova_analise() -> None:
     c1, c2 = st.columns([1, 1])
     superficie = c1.selectbox(
         "Superfície",
-        ["asfalto", "terra"],
+        ["auto", "asfalto", "terra"],
         format_func={
+            "auto": "Automática (decide por via: asfalto ou terra)",
             "asfalto": "Asfalto em bom estado de cor (cinza)",
             "terra": "Via muito gasta ou de terra",
         }.get,

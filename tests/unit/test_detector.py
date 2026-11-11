@@ -76,3 +76,20 @@ def test_pixel_colorido_nao_e_asfalto(detector):
     img = np.repeat(_asfalto(rng)[..., None], 3, axis=2)
     img[150:200, 150:200] = (20, 90, 20)  # mancha verde-escura: vegetacao, nao buraco
     assert detector.detectar(img, 0.02, np.ones((400, 400), bool)) == []
+
+
+def test_asfalto_ao_sol_ao_lado_de_sombra_longa_nao_vira_revestimento_perdido(detector):
+    """Sol baixo: metade da via na sombra (escura, azulada), metade ao sol (clara, quente)."""
+    rng = np.random.default_rng(12)
+    img = np.empty((400, 600, 3), np.uint8)
+    for k, (sombra, sol) in enumerate(
+        ((74, 197), (73, 167), (76, 144))
+    ):  # cores medidas no Uiramuta
+        img[:200, :, k] = (sombra + 3 * rng.standard_normal((200, 600))).clip(0, 255)
+        img[200:, :, k] = (sol + 4 * rng.standard_normal((200, 600))).clip(0, 255)
+    dets = detector.detectar(img, 0.03, np.ones((400, 600), bool))
+    assert [d for d in dets if d.classe == "solo_exposto"] == []
+    # mas terra de verdade sobre o asfalto ao sol continua sendo achada
+    img[280:320, 100:500] = (236, 196, 150)
+    solo = [d for d in detector.detectar(img, 0.03, np.ones((400, 600), bool)) if d.extensa]
+    assert len(solo) == 1 and solo[0].mascara[290:310, 150:450].all()

@@ -24,7 +24,9 @@ def run(
     eixo: Path | None = typer.Option(
         None, help="Eixo da via desenhado (GeoJSON de linhas), em vez do OpenStreetMap"
     ),
-    superficie: str = typer.Option("asfalto", help="asfalto | terra (via gasta ou de terra)"),
+    superficie: str = typer.Option(
+        "auto", help="auto (decide por via) | asfalto | terra (via gasta ou de terra)"
+    ),
     config: Path | None = typer.Option(None, help="params.yaml alternativo"),
 ) -> None:
     """Processa uma ortofoto e grava o levantamento em --saida."""
@@ -33,7 +35,7 @@ def run(
     if pista is None:
         pista = orto.parent / "pista.geojson"
         # eixo ou superficie pedidos de forma explicita refazem a pista, mesmo que exista uma
-        if not pista.is_file() or eixo is not None or superficie != "asfalto":
+        if not pista.is_file() or eixo is not None or superficie != "auto":
             typer.echo("Sem --pista: gerando a pista pelos eixos de via...")
             pista_osm.gerar(orto, pista, config, eixo=eixo, superficie=superficie)
         typer.echo(f"Pista: {pista}")
@@ -59,7 +61,9 @@ def pista_cmd(
     eixo: Path | None = typer.Option(
         None, help="Eixo da via desenhado (GeoJSON de linhas), em vez do OpenStreetMap"
     ),
-    superficie: str = typer.Option("asfalto", help="asfalto | terra (via gasta ou de terra)"),
+    superficie: str = typer.Option(
+        "auto", help="auto (decide por via) | asfalto | terra (via gasta ou de terra)"
+    ),
     config: Path | None = typer.Option(None, help="params.yaml alternativo"),
 ) -> None:
     """Gera o poligono da pista pelas vias do OpenStreetMap e pela cor do asfalto."""
