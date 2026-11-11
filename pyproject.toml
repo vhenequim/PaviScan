@@ -24,6 +24,8 @@ dependencies = [
     "streamlit>=1.50",
     "plotly",
     "pydeck",
+    "folium",
+    "streamlit-folium",
     "typer",
 ]
 
@@ -53,3 +55,7 @@ extend-immutable-calls = ["typer.Option", "typer.Argument"]
 [tool.ruff.lint.per-file-ignores]
 # o gabarito e bloqueado para edicao; a ordem de import dele ficou "errada" quando pipeline.py passou a existir
 "tests/golden/*" = ["I001"]
+# telas e relatorio tem textos longos de interface
+"src/paviscan/painel/app.py" = ["E501"]
+"src/paviscan/relatorio.py" = ["E501"]
+"src/paviscan/base_publica.py" = ["E501"]

@@ -108,6 +108,28 @@ def _eixos(osm: dict, crs, quadro, cfg: dict) -> list[tuple[str, str, LineString
     return sorted(eixos, key=lambda e: (ordem.get(e[1], 99), -e[2].length))
 
 
+def _eixos_de_arquivo(caminho: Path, crs, quadro, cfg: dict) -> list[tuple[str, str, LineString]]:
+    """Eixos desenhados pelo usuario (GeoJSON de linhas), partidos em trechos retos."""
+    g = gpd.read_file(caminho)
+    if g.crs is None:
+        raise ValueError(f"{caminho} nao tem SRC")
+    g = g.to_crs(crs)
+    col = next((c for c in ("nome", "name") if c in g.columns), None)
+    eixos = []
+    for i, geom in enumerate(g.geometry):
+        if geom is None or geom.is_empty:
+            continue
+        nome = str(g[col].iloc[i]) if col and str(g[col].iloc[i]) not in ("", "nan", "None") else ""
+        nome = nome or f"Via {i + 1}"
+        dentro = geom.intersection(quadro)
+        for parte in dentro.geoms if hasattr(dentro, "geoms") else [dentro]:
+            if parte.geom_type != "LineString" or parte.length < cfg["trecho_min_m"]:
+                continue
+            for trecho in _partir_nas_dobras(parte, cfg["dobra_max_graus"], cfg["trecho_min_m"]):
+                eixos.append((nome, "desenhado", trecho))
+    return eixos
+
+
 def _tapar_furos(m: np.ndarray, area_max_px: float) -> np.ndarray:
     """Furo interno pequeno (buraco, bueiro, pintura) volta a ser pista."""
     n, rot, stats, _ = cv2.connectedComponentsWithStats((~m).astype(np.uint8), connectivity=4)
@@ -121,8 +143,23 @@ def _tapar_furos(m: np.ndarray, area_max_px: float) -> np.ndarray:
     return saida
 
 
-def gerar(orto: Path, saida: Path, config: Path | None = None, vias: Path | None = None) -> Path:
-    """Grava `saida` (GeoJSON no SRC da ortofoto) com um poligono de pista por trecho de via."""
+def gerar(
+    orto: Path,
+    saida: Path,
+    config: Path | None = None,
+    vias: Path | None = None,
+    eixo: Path | None = None,
+    superficie: str = "asfalto",
+) -> Path:
+    """Grava `saida` (GeoJSON no SRC da ortofoto) com um poligono de pista por trecho de via.
+
+    Os eixos vem de `eixo` (linhas desenhadas pelo usuario) ou, sem ele, do OpenStreetMap.
+    `superficie` diz como achar a borda real em volta do eixo: "asfalto" (cinza, com brilho
+    parecido com o do eixo) ou "terra" (tudo que nao e vegetacao: serve para via de terra
+    ou de revestimento muito gasto).
+    """
+    if superficie not in ("asfalto", "terra"):
+        raise ValueError(f"superficie desconhecida: {superficie}")
     orto, saida = Path(orto), Path(saida)
     params = config_mod.carregar(config)
     cfg = params["pista_osm"]
@@ -139,26 +176,35 @@ def gerar(orto: Path, saida: Path, config: Path | None = None, vias: Path | None
         tf = ds.transform @ Affine.scale(ds.width / w, ds.height / h)
     res = (abs(tf.a) + abs(tf.e)) / 2
 
-    cache = Path(vias) if vias else saida.with_name("vias_osm.json")
-    if cache.is_file():
-        osm = json.loads(cache.read_text())
+    if eixo is not None:
+        eixos, fonte = _eixos_de_arquivo(Path(eixo), crs, box(*limites), cfg), "eixo desenhado"
+        if not eixos:
+            raise RuntimeError("o eixo desenhado nao cruza a ortofoto ou e curto demais")
     else:
-        para_geo = Transformer.from_crs(crs, 4326, always_xy=True)
-        lons, lats = para_geo.transform(
-            [limites.left, limites.right, limites.left, limites.right],
-            [limites.bottom, limites.bottom, limites.top, limites.top],
-        )
-        osm = baixar_vias(min(lats), min(lons), max(lats), max(lons))
-        saida.parent.mkdir(parents=True, exist_ok=True)
-        cache.write_text(json.dumps(osm))
-
-    eixos = _eixos(osm, crs, box(*limites), cfg)
-    if not eixos:
-        raise RuntimeError("OpenStreetMap nao tem via mapeada dentro da ortofoto")
+        cache = Path(vias) if vias else saida.with_name("vias_osm.json")
+        if cache.is_file():
+            osm = json.loads(cache.read_text())
+        else:
+            para_geo = Transformer.from_crs(crs, 4326, always_xy=True)
+            lons, lats = para_geo.transform(
+                [limites.left, limites.right, limites.left, limites.right],
+                [limites.bottom, limites.bottom, limites.top, limites.top],
+            )
+            osm = baixar_vias(min(lats), min(lons), max(lats), max(lons))
+            saida.parent.mkdir(parents=True, exist_ok=True)
+            cache.write_text(json.dumps(osm))
+        eixos, fonte = _eixos(osm, crs, box(*limites), cfg), "OpenStreetMap"
+        if not eixos:
+            raise RuntimeError("OpenStreetMap nao tem via mapeada dentro da ortofoto")
 
     hsv = cv2.cvtColor(np.ascontiguousarray(rgb.astype(np.uint8)), cv2.COLOR_RGB2HSV)
     sat, brilho = hsv[..., 1] / 255.0, hsv[..., 2] / 255.0
     cinzento = (sat <= cfg["saturacao_max"]) & com_dado
+    cor = rgb.astype(np.int16)
+    sem_vegetacao = ((2 * cor[..., 1] - cor[..., 0] - cor[..., 2]) <= cfg["exg_max"]) & com_dado
+    # telhado, laje e concreto claros nao sao via: claro e sem cor
+    claro = (brilho >= cfg["brilho_claro"]) & (sat <= cfg["saturacao_max"])
+    sem_vegetacao &= ~claro
 
     def raster(geom) -> np.ndarray:
         return rasterize([geom], out_shape=(h, w), transform=tf, fill=0).astype(bool)
@@ -169,6 +215,10 @@ def gerar(orto: Path, saida: Path, config: Path | None = None, vias: Path | None
         corredor = raster(linha.buffer(larguras.get(classe, larguras["padrao"]), cap_style="flat"))
         perto = raster(linha.buffer(cfg["faixa_referencia_m"], cap_style="flat"))
         corredores.append(corredor)
+        if superficie == "terra":  # a via e tudo que nao e vegetacao em volta do eixo
+            asfalto |= corredor & sem_vegetacao
+            miolo |= perto
+            continue
         ref = brilho[perto & cinzento]
         if ref.size < cfg["pixels_referencia_min"]:
             continue
@@ -196,9 +246,9 @@ def gerar(orto: Path, saida: Path, config: Path | None = None, vias: Path | None
         if pol.area < cfg["area_min_m2"]:
             continue
         nome, classe, _ = eixos[i - 1]
-        linhas.append({"nome": nome, "classe": classe, "fonte": "OpenStreetMap", "geometry": pol})
+        linhas.append({"nome": nome, "classe": classe, "fonte": fonte, "geometry": pol})
     if not linhas:
-        raise RuntimeError("nenhum trecho de asfalto encontrado em volta das vias do OpenStreetMap")
+        raise RuntimeError("nenhum trecho de pista encontrado em volta dos eixos")
     saida.parent.mkdir(parents=True, exist_ok=True)
     gpd.GeoDataFrame(linhas, geometry="geometry", crs=crs).to_file(saida, driver="GeoJSON")
     return saida

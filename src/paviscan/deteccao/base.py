@@ -13,6 +13,9 @@ class Deteccao:
     mascara: np.ndarray  # bool HxW, um buraco por deteccao
     confianca: float  # 0 a 1
     classe: str = "panela"
+    # regiao extensa: mede area, nao objeto. Pode cruzar janelas e segmentos; o pipeline
+    # une os pedacos vistos em janelas vizinhas e reparte a area pelos segmentos
+    extensa: bool = False
 
 
 class Detector(Protocol):

@@ -1,0 +1,20 @@
+opcao,descricao,servico,unidade,base_quantidade,fator,pavimento,terreno
+A,Tapa-buraco superficial,corte_e_limpeza,m2,area_corte,1.0,*,*
+A,Tapa-buraco superficial,pintura_de_ligacao,m2,area_corte,1.0,*,*
+A,Tapa-buraco superficial,revestimento_cbuq,m3,area_corte,0.05,CBUQ,*
+A,Tapa-buraco superficial,revestimento_pmf,m3,area_corte,0.05,PMF,*
+A,Tapa-buraco superficial,revestimento_tsd,m2,area_corte,1.0,TSD,*
+B,Remendo profundo,corte_e_limpeza,m2,area_corte,1.0,*,*
+B,Remendo profundo,escavacao_e_remocao,m3,area_corte,0.20,*,bom
+B,Remendo profundo,escavacao_e_remocao,m3,area_corte,0.30,*,regular
+B,Remendo profundo,escavacao_e_remocao,m3,area_corte,0.45,*,ruim
+B,Remendo profundo,base_brita_graduada,m3,area_corte,0.15,*,bom
+B,Remendo profundo,base_brita_graduada,m3,area_corte,0.25,*,regular
+B,Remendo profundo,base_brita_graduada,m3,area_corte,0.40,*,ruim
+B,Remendo profundo,imprimacao,m2,area_corte,1.0,*,*
+B,Remendo profundo,revestimento_cbuq,m3,area_corte,0.05,CBUQ,*
+B,Remendo profundo,revestimento_pmf,m3,area_corte,0.05,PMF,*
+B,Remendo profundo,revestimento_tsd,m2,area_corte,1.0,TSD,*
+C,Fresagem e recapeamento do segmento,fresagem,m2,area_segmento,1.0,*,*
+C,Fresagem e recapeamento do segmento,pintura_de_ligacao,m2,area_segmento,1.0,*,*
+C,Fresagem e recapeamento do segmento,revestimento_cbuq,m3,area_segmento,0.04,*,*

@@ -12,6 +12,8 @@ import pandas as pd
 
 SEVERIDADES = ["baixa", "media", "alta"]
 ROTULO_SEVERIDADE = {"baixa": "Baixa", "media": "Média", "alta": "Alta"}
+ROTULO_CLASSE = {"panela": "Buraco", "solo_exposto": "Revestimento perdido"}
+CONCEITOS = ["A", "B", "C", "D", "E"]
 COLUNAS_DEFEITO = {
     "id": "int64",
     "area_m2": "float64",
@@ -21,6 +23,7 @@ COLUNAS_DEFEITO = {
     "severidade": "object",
     "segmento": "int64",
     "via": "object",
+    "classe": "object",
 }
 
 
@@ -44,7 +47,9 @@ def carregar(run: Path) -> tuple[gpd.GeoDataFrame, gpd.GeoDataFrame, dict]:
         det = gpd.GeoDataFrame(det, geometry=gpd.GeoSeries([], crs=seg.crs), crs=seg.crs)
     for col, tipo in COLUNAS_DEFEITO.items():
         if col not in det.columns:
-            det[col] = pd.Series(dtype=tipo)
+            det[col] = "panela" if col == "classe" and len(det) else pd.Series(dtype=tipo)
+    if "na_emenda" not in det.columns:
+        det["na_emenda"] = False
     if "via" not in seg.columns:
         seg["via"] = "pista"
     if "comprimento_m" not in seg.columns:
@@ -60,8 +65,9 @@ def filtrar(
     severidade: list[str] | None = None,
     segmentos: list[int] | None = None,
     vias: list[str] | None = None,
+    classes: list[str] | None = None,
 ) -> gpd.GeoDataFrame:
-    """Filtra os buracos. None = nao filtra por aquele criterio."""
+    """Filtra os defeitos. None = nao filtra por aquele criterio."""
     d = defeitos
     m = pd.Series(True, index=d.index)
     if area_min is not None:
@@ -76,6 +82,8 @@ def filtrar(
         m &= d["segmento"].isin([int(s) for s in segmentos])
     if vias is not None and "via" in d.columns:
         m &= d["via"].isin(list(vias))
+    if classes is not None and "classe" in d.columns:
+        m &= d["classe"].isin(list(classes))
     return d[m]
 
 
@@ -150,6 +158,90 @@ def segmentos_filtrados(defeitos: gpd.GeoDataFrame, segmentos: gpd.GeoDataFrame)
     return s
 
 
+def parametros(config: Path | None = None) -> dict:
+    """params.yaml inteiro (para os blocos `condicao` e `orcamento`)."""
+    from paviscan import config as config_mod
+
+    return config_mod.carregar(config)
+
+
+def indice_condicao(pct_afetada, defeitos_por_100m, cfg: dict):
+    """Indice de condicao de 0 a 100 (100 = sem defeito). `cfg` e o bloco `condicao`.
+
+    E um indice de trabalho para ordenar trechos: perde `peso_area` pontos por 1 % de area
+    afetada e `peso_densidade` pontos por defeito a cada 100 m. Nao e IGG nem ICP de norma.
+    """
+    nota = 100 - cfg["peso_area"] * pct_afetada - cfg["peso_densidade"] * defeitos_por_100m
+    return nota.clip(0, 100) if hasattr(nota, "clip") else max(0.0, min(100.0, nota))
+
+
+def conceito(indice: float, cfg: dict) -> str:
+    """Conceito A a E pela nota minima de cada um em `condicao.conceitos`."""
+    for letra in CONCEITOS[:-1]:
+        if indice >= cfg["conceitos"][letra]:
+            return letra
+    return CONCEITOS[-1]
+
+
+def condicao_segmentos(
+    defeitos: gpd.GeoDataFrame, segmentos: gpd.GeoDataFrame, cfg: dict
+) -> pd.DataFrame:
+    """`por_segmento` com densidade, indice de condicao e conceito de cada segmento."""
+    s = por_segmento(defeitos, segmentos)
+    extensao = s["comprimento_m"].where(s["comprimento_m"] > 0) if "comprimento_m" in s else None
+    s["defeitos_por_100m"] = (
+        (100 * s["n_buracos"] / extensao).fillna(0.0) if extensao is not None else 0.0
+    )
+    s["indice"] = indice_condicao(s["pct_afetada"], s["defeitos_por_100m"], cfg)
+    s["conceito"] = [conceito(v, cfg) for v in s["indice"]]
+    return s
+
+
+def por_via(defeitos: gpd.GeoDataFrame, segmentos: gpd.GeoDataFrame, cfg: dict) -> pd.DataFrame:
+    """Uma linha por via: extensao, area, defeitos, % afetada, indice e conceito. Pior primeiro."""
+    s = por_segmento(defeitos, segmentos)
+    if "via" not in s:
+        s["via"] = "pista"
+    if "comprimento_m" not in s:
+        s["comprimento_m"] = 0.0
+    g = s.groupby("via", as_index=False).agg(
+        extensao_m=("comprimento_m", "sum"),
+        area_pista_m2=("area_pista_m2", "sum"),
+        n_buracos=("n_buracos", "sum"),
+        area_buracos_m2=("area_buracos_m2", "sum"),
+        segmentos=("segmento", "count"),
+    )
+    g["pct_afetada"] = 100 * g["area_buracos_m2"] / g["area_pista_m2"]
+    g["defeitos_por_100m"] = (
+        100 * g["n_buracos"] / g["extensao_m"].where(g["extensao_m"] > 0)
+    ).fillna(0)
+    g["indice"] = indice_condicao(g["pct_afetada"], g["defeitos_por_100m"], cfg)
+    g["conceito"] = [conceito(v, cfg) for v in g["indice"]]
+    return g.sort_values(["indice", "area_buracos_m2"], ascending=[True, False]).reset_index(
+        drop=True
+    )
+
+
+def condicao_geral(defeitos: gpd.GeoDataFrame, segmentos: gpd.GeoDataFrame, cfg: dict) -> dict:
+    """Indice e conceito do recorte inteiro."""
+    r = resumir(defeitos, segmentos)
+    nota = float(indice_condicao(r["pct_afetada"], r["buracos_por_100m"], cfg))
+    return {"indice": nota, "conceito": conceito(nota, cfg)}
+
+
+def contagem_classe(defeitos: gpd.GeoDataFrame) -> dict[str, dict[str, float]]:
+    """Por classe de defeito: quantidade e area."""
+    if defeitos.empty:
+        return {}
+    g = defeitos.groupby("classe")["area_m2"].agg(["count", "sum"])
+    return {k: {"n": int(v["count"]), "area_m2": float(v["sum"])} for k, v in g.iterrows()}
+
+
+def reais(valor: float) -> str:
+    """Valor em reais no formato brasileiro: R$ 1.234,56."""
+    return "R$ " + fmt(valor, 2)
+
+
 def fmt(valor: float, casas: int = 2) -> str:
     """Numero em formato brasileiro: 1.234,56."""
     txt = f"{valor:,.{casas}f}"
@@ -159,7 +251,7 @@ def fmt(valor: float, casas: int = 2) -> str:
 def tabela(defeitos: gpd.GeoDataFrame) -> pd.DataFrame:
     """Buracos sem geometria, colunas na ordem de exibicao."""
     ordem = [
-        "id", "severidade", "area_m2", "largura_m", "comprimento_m", "confianca",
+        "id", "classe", "severidade", "area_m2", "largura_m", "comprimento_m", "confianca",
         "via", "segmento", "na_emenda", "lat", "lon", "x", "y",
     ]  # fmt: skip
     return pd.DataFrame(defeitos[[c for c in ordem if c in defeitos.columns]])

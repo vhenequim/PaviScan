@@ -21,6 +21,10 @@ def run(
     pista: Path | None = typer.Option(
         None, help="Poligono da pista (GeoJSON). Sem ele, gera pelas vias do OpenStreetMap"
     ),
+    eixo: Path | None = typer.Option(
+        None, help="Eixo da via desenhado (GeoJSON de linhas), em vez do OpenStreetMap"
+    ),
+    superficie: str = typer.Option("asfalto", help="asfalto | terra (via gasta ou de terra)"),
     config: Path | None = typer.Option(None, help="params.yaml alternativo"),
 ) -> None:
     """Processa uma ortofoto e grava o levantamento em --saida."""
@@ -29,8 +33,8 @@ def run(
     if pista is None:
         pista = orto.parent / "pista.geojson"
         if not pista.is_file():
-            typer.echo("Sem --pista: gerando pelas vias do OpenStreetMap...")
-            pista_osm.gerar(orto, pista, config)
+            typer.echo("Sem --pista: gerando a pista pelos eixos de via...")
+            pista_osm.gerar(orto, pista, config, eixo=eixo, superficie=superficie)
         typer.echo(f"Pista: {pista}")
 
     with typer.progressbar(length=100, label="Processando") as barra:
@@ -51,12 +55,17 @@ def pista_cmd(
     orto: Path = typer.Option(..., exists=True, dir_okay=False, help="Ortofoto GeoTIFF"),
     saida: Path = typer.Option(..., help="GeoJSON de saida, ex.: dados/x/pista.geojson"),
     vias: Path | None = typer.Option(None, help="JSON do Overpass ja baixado (uso offline)"),
+    eixo: Path | None = typer.Option(
+        None, help="Eixo da via desenhado (GeoJSON de linhas), em vez do OpenStreetMap"
+    ),
+    superficie: str = typer.Option("asfalto", help="asfalto | terra (via gasta ou de terra)"),
     config: Path | None = typer.Option(None, help="params.yaml alternativo"),
 ) -> None:
     """Gera o poligono da pista pelas vias do OpenStreetMap e pela cor do asfalto."""
     from . import pista_osm
 
-    typer.echo(f"Pista gravada em {pista_osm.gerar(orto, saida, config, vias)}")
+    destino = pista_osm.gerar(orto, saida, config, vias, eixo, superficie)
+    typer.echo(f"Pista gravada em {destino}")
 
 
 @app.command()

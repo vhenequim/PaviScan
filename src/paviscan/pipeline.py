@@ -15,7 +15,7 @@ from shapely.ops import unary_union
 from shapely.prepared import prep
 
 from . import config as config_mod
-from . import exportar, geometria, indicadores, ingestao
+from . import exportar, geometria, indicadores, ingestao, orcamento
 from . import pista as pista_mod
 from .deteccao import Deteccao, criar
 
@@ -46,6 +46,11 @@ def _inteiras(
         linhas = d.mascara.any(axis=1).nonzero()[0]
         colunas = d.mascara.any(axis=0).nonzero()[0]
         if linhas.size == 0:
+            continue
+        if d.extensa:  # regiao extensa: fica sempre; os pedacos sao unidos depois
+            boas.append(d)
+            folgas.append(math.inf)
+            emendas.append(False)
             continue
         h, w = d.mascara.shape
         l0, l1, c0, c1 = int(linhas[0]), int(linhas[-1]), int(colunas[0]), int(colunas[-1])
@@ -130,7 +135,10 @@ def processar(
             itens += geometria.vetorizar(boas, tf, folgas, emendas)
             avisar(0.85 * (i + 1) / len(todas), f"Detectando: janela {i + 1} de {len(todas)}")
         avisar(0.88, "Medindo buracos")
+        seg = params["segmentos"]
+        segmentos = pista_mod.segmentar(pista_gdf, float(seg["comprimento_m"]), seg["resto_min_m"])
         unicos = geometria.deduplicar(itens, t["duplicata_min"])
+        unicos = geometria.repartir(unicos, segmentos, seg["pedaco_min_m2"])
         defeitos = geometria.medir(unicos, ds.crs, gsd, params["severidade"])
         cortadas = int(defeitos["na_emenda"].sum()) if len(defeitos) else 0
         if cortadas:
@@ -140,8 +148,6 @@ def processar(
                 "aumente tiles.sobreposicao_min_m",
                 stacklevel=2,
             )
-        seg = params["segmentos"]
-        segmentos = pista_mod.segmentar(pista_gdf, float(seg["comprimento_m"]), seg["resto_min_m"])
         defeitos = indicadores.atribuir_segmento(defeitos, segmentos)
         segmentos = indicadores.por_segmento(defeitos, segmentos)
 
@@ -167,6 +173,12 @@ def processar(
             processado_em=datetime.now().isoformat(timespec="seconds"),
             fonte=_fonte(orto),
         )
+    avisar(0.97, "Orcando")
+    solucoes, precos = orcamento.carregar_tabelas(config)
+    cfg_orc = params["orcamento"]
+    orc = orcamento.orcar(defeitos, segmentos, solucoes, precos, cfg_orc)
+    plano, escolha = orcamento.plano_recomendado(defeitos, orc, cfg_orc)
+    resumo.update(orcamento.gravar(saida, orc, plano, escolha, precos, float(cfg_orc["bdi"])))
     exportar.gravar(saida, defeitos, segmentos, resumo)
     avisar(1.0, "Pronto")
     return saida

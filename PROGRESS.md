@@ -10,7 +10,7 @@ Atualize ao fim de cada sessão. Curto e factual.
 | M2 Detecção e geometria | feito (11/11) | Golden de detecção passa; 8/8 de recall, 0 FP, erro de área de 3 % |
 | M3 Indicadores, exportações e imagem real | feito (11/11) | Golden de indicadores passa; duas ortofotos reais processadas |
 | M4 Dashboard | feito (11/11) | Golden do painel passa; conferido no navegador |
-| M5 Fechamento | em parte | README feito. Faltam roteiro da apresentação, ensaio e vídeo de reserva |
+| M5 Fechamento | em parte | README feito e produto ampliado (ver rodada de produto). Faltam roteiro da apresentação, ensaio e vídeo de reserva |
 
 O MVP foi feito de uma vez em 11/11, a pedido, sem a divisão por marcos.
 
@@ -63,6 +63,40 @@ Terceira passada: APROVADO, sem problema grave, `verify.sh` OK (41 unitários, 1
 - Objeto com mais de ~2 m nas duas dimensões é medido de forma instável, sem marca.
 - Raster que não é uint8 com mais de 0,5 % da área saturada derruba a escala de brilho sem aviso.
 
+## Rodada de produto (11/11, tarde): entrada de arquivos, orçamento, condição, Querari
+
+Pedido do usuário: aproximar do produto final, com a entrada de arquivos e a parte "meio que de orçamento" do repositório Petralanda/paviscan, testar no Querari e usar a base UAV-PDD2023 se ajudasse. Prioridade declarada: o visual para a apresentação vale mais que o algoritmo.
+
+O que entrou:
+- **Entrada de arquivos** (`acervo.py`, aba Nova análise): upload até 4 GB ou caminho no disco, gravação em arquivo parcial com conferência da georreferência, acervo em `dados/<nome>/`. A via pode vir do OpenStreetMap, de um eixo desenhado em cima da imagem (folium) ou de arquivo (polígono ou linha).
+- **Pista por eixo desenhado** e superfície `terra` (tudo que não é vegetação nem telhado claro em volta do eixo): `paviscan run --eixo ... --superficie terra`.
+- **Segunda classe de defeito**, `solo_exposto` (revestimento perdido): região extensa, medida como área, unida entre janelas e repartida por segmento. Campo novo `Deteccao.extensa`. Detector na versão 0.5.1.
+- **Orçamento** (`orcamento.py`, `config/solucoes.csv`, `config/precos.csv`): opções A, B e C, plano recomendado, BDI só no total, `orcamento.csv` e `orcamento.xlsx`. Veio da especificação que estava no histórico deste repositório (commit 750f4bd). Preços continuam PLACEHOLDER.
+- **Índice de condição** (0 a 100) e conceito A a E por segmento e por via (`condicao` no params.yaml). De trabalho, não é de norma.
+- **Painel redesenhado** em abas: Visão geral (com relevo 3D e trechos prioritários), Vias e trechos, Inspeção, Orçamento, Dados e relatório, Nova análise, Próximos passos.
+- **Relatório executivo** em HTML (`relatorio.py`), com os filtros atuais. Exemplos em `runs/querari/relatorio.html` e `runs/taruma/relatorio.html`.
+- **Base UAV-PDD2023** (`base_publica.py`): só ilustração na aba Próximos passos. O zip veio truncado, mas as 2.440 anotações e 2.080 imagens são legíveis; extraí as anotações e 14 fotos para `dados/uavpdd`.
+
+Achados:
+- O repositório do Petralanda **não tem cálculo de orçamento**: no HEAD há só quantitativos (ranking, tabela, downloads). A especificação de custo existiu no histórico e foi removida.
+- UAV-PDD2023 é quase só trinca (195 panelas em 11.158 anotações) e são fotos próximas, sem georreferência. Não serve para treinar detector de buraco sozinha.
+- No Querari o dano é revestimento perdido em faixas longas, mais claro que o asfalto velho e de cor de solo. O detector de "anomalia escura" achava 2 m²; a segunda passada acha 167 m² (10,9 % da pista), com contorno coerente nos recortes.
+
+Resultado (detector 0.5.1, preços ilustrativos):
+
+| Imagem | Pista | Defeitos | Área | % afetada | Buraco / Revest. perdido | Condição | Plano (ilustrativo) |
+|---|---|---|---|---|---|---|---|
+| Querari | 1.534 m² | 260 | 167,3 m² | 10,91 % | 2 / 258 | E | R$ 76,6 mil |
+| Tarumã | 11.976 m² | 635 | 157,9 m² | 1,32 % | 404 / 231 | B | R$ 163,0 mil |
+| Novo Aleixo | 8.312 m² | 537 | 110,1 m² | 1,33 % | 318 / 219 | B | R$ 98,3 mil |
+
+O que não foi feito ou conferido nesta rodada:
+- **Não houve revisão do verificador** (a anterior custou três passadas). `verify.sh` passa: 50 unitários e 13 golden.
+- No navegador conferi as abas, o mapa 3D, o Querari e o mapa de desenho abrindo. **Não** exercitei de ponta a ponta, pela tela, o envio de arquivo, o traçado do eixo seguido de processamento, nem o botão do relatório; essas partes têm teste unitário ou foram rodadas pela linha de comando.
+- Nas imagens de Manaus a classe `solo_exposto` tem muito falso positivo (asfalto mais claro, calçada, concreto), com confiança baixa. O filtro "Tipo de defeito" permite desligar.
+- O Querari leva cerca de 4 min (reprojeção de EPSG:4326 durante a leitura).
+- Nada foi commitado.
+
 ## Decisões
 - 10/11: escopo reduzido a um retrato de uma imagem. Orçamento e série temporal saíram.
 - 10/11: detector por anomalia escura local com limiar robusto (mediana + k x MAD), não Otsu nem watershed puro. YOLO do mestrado entra depois pela interface `Detector`.
@@ -79,6 +113,9 @@ Terceira passada: APROVADO, sem problema grave, `verify.sh` OK (41 unitários, 1
 - 11/11: o usuário aprovou o que entrou além do plano: pista automática pelo OpenStreetMap (`pista_osm.py`), download do OpenAerialMap (`oam.py`), as linhas acrescentadas ao `CLAUDE.md` (comandos, estrutura, `via`, `comprimento_m`, `progresso`) e a exceção de lint I001 em `tests/golden/`.
 
 ## Pendências e dúvidas para o usuário
+- Preços reais para `config/precos.csv` (SICRO, SINAPI ou contrato). Sem isso o valor em reais é só ilustração.
+- Decidir se a classe `solo_exposto` fica ligada por padrão em via urbana de asfalto (`classico.solo_exposto`).
+- Conferir no `CLAUDE.md` as linhas que acrescentei nesta rodada (orçamento de volta ao escopo, módulos novos, campos novos).
 - O `CLAUDE.md` ainda não registra: pista recortada pela área com dado (o contrato diz "cobre a pista inteira"), erro quando a pista não cruza a ortofoto, coluna `na_emenda` e chaves `cortadas_por_janela` e `limites_detector` do resumo. Não editei o arquivo por conta própria nesta parte; proponho acrescentar.
 - `area_max_m2` está em 10 m², mas o detector só é confiável até ~2 m de lado. Decidir: baixar o limite (4 m² tira carro escuro e objeto grande instável) ou aumentar `janela_fundo_m`.
 - Confirmar as faixas de severidade em `config/params.yaml` (0,25 e 1,0 m²).

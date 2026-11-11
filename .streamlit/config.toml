@@ -7,3 +7,6 @@ textColor = "#1F2A22"
 
 [browser]
 gatherUsageStats = false
+
+[server]
+maxUploadSize = 4096   # MB: ortofoto de drone passa facil de 200 MB

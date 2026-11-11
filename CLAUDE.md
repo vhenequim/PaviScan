@@ -32,6 +32,10 @@ src/paviscan/
   config.py       leitura do params.yaml
   pista_osm.py    extra: pista automática (eixos do OpenStreetMap + cor do asfalto)
   oam.py          extra: baixa ortofoto do OpenAerialMap
+  orcamento.py    quantitativos e custo de reparo (tabelas em config/solucoes.csv e precos.csv)
+  acervo.py       entrada de arquivos: uma pasta por ortofoto em dados/ (orto.tif, pista, eixo)
+  relatorio.py    relatório executivo em HTML
+  base_publica.py resumo e exemplos da base UAV-PDD2023 (só ilustração no painel)
 config/params.yaml
 tests/golden/     testes de aceite. BLOQUEADOS para edição
 tests/unit/       testes que você escreve
@@ -78,6 +82,10 @@ class Deteccao:
 - `segmento` é o índice do trecho de `segmento_m` metros ao longo do eixo maior da pista em que cai o centroide do buraco.
 - A pista pode ter várias feições (uma por via). Cada uma é segmentada no próprio eixo; `segmento` é sequencial e `via` guarda o nome. `segmentos.geojson` também tem `via` e `comprimento_m`, e `defeitos.geojson` tem `via`.
 - `processar` aceita um quinto argumento opcional, `progresso(fracao, texto)`, usado pela CLI e pelo painel.
+- `Deteccao` tem um campo opcional `extensa` (padrão False): região que mede área, não objeto. O pipeline une os pedaços entre janelas e reparte a área pelos segmentos. `defeitos.geojson` tem `classe` (`panela` ou `solo_exposto`) e `na_emenda`.
+- A pista é recortada pela área com dado da ortofoto; pista que não cruza a imagem é `ValueError`.
+- `processar` também grava `orcamento.csv` (id, opcao, servico, unidade, quantidade, preco_unit, custo) e `orcamento.xlsx`, e põe em `resumo.json`: `custo_por_opcao`, `custo_plano`, `bdi`, `precos_placeholder`, `cortadas_por_janela`, `limites_detector`.
+- Orçamento: as regras de engenharia ficam nas tabelas de `config/`; o código só aplica. Nunca inventar nem corrigir preço: linha com fonte PLACEHOLDER é ilustrativa e a tela avisa.
 - O detector é escolhido por `detector:` em `params.yaml`. Nada fora de `deteccao/` pode saber qual detector está rodando.
 
 ## Regras
@@ -86,7 +94,7 @@ class Deteccao:
 - Nunca carregar o raster inteiro: ler por janelas (`rasterio.windows`), com sobreposição para o buraco não ser cortado na borda.
 - Limiares moram em `config/`, em metros, nunca em pixel e nunca no código.
 - Não editar `tests/golden/` nem `src/paviscan/sintetico.py` para fazer teste passar. Se o teste parecer errado, pare e explique ao usuário.
-- Fora do escopo: orçamento, comparação entre datas, profundidade, trincas. Não implemente sem o usuário pedir.
+- Fora do escopo: comparação entre datas, profundidade, trincas. Não implemente sem o usuário pedir. (O orçamento voltou ao escopo em 11/11, a pedido do usuário.)
 - Código e nomes em português sem acento, docstrings curtas, type hints, sem classes onde função resolve.
 - Um commit por tarefa, mensagem em português no imperativo. Não dar push sem o usuário pedir.
 

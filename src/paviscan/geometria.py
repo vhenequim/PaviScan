@@ -13,8 +13,8 @@ from shapely.ops import unary_union
 
 from .deteccao import Deteccao
 
-# geometria, confianca, classe, folga (px ate a borda interna da janela), na_emenda
-Item = tuple[BaseGeometry, float, str, float, bool]
+# geometria, confianca, classe, folga (px ate a borda interna da janela), na_emenda, extensa
+Item = tuple[BaseGeometry, float, str, float, bool, bool]
 
 COLUNAS = [
     "area_m2", "largura_m", "comprimento_m", "confianca", "severidade", "classe", "na_emenda",
@@ -40,7 +40,9 @@ def vetorizar(
         if pols:
             folga = float(folgas[k]) if folgas is not None else float("inf")
             emenda = bool(emendas[k]) if emendas is not None else False
-            itens.append((unary_union(pols), float(d.confianca), d.classe, folga, emenda))
+            itens.append(
+                (unary_union(pols), float(d.confianca), d.classe, folga, emenda, d.extensa)
+            )
     return itens
 
 
@@ -56,8 +58,10 @@ def deduplicar(itens: list[Item], fracao_min: float) -> list[Item]:
     Nao ha uniao de poligonos: toda geometria que sai daqui e exatamente uma deteccao,
     entao os filtros de forma do detector continuam valendo na saida.
     """
+    extensos = [it for it in itens if it[5]]
+    itens = [it for it in itens if not it[5]]
     if len(itens) < 2:
-        return list(itens)
+        return list(itens) + unir_extensos(extensos)
     geoms = [it[0] for it in itens]
     areas = [g.area for g in geoms]
     arvore = STRtree(geoms)
@@ -73,7 +77,41 @@ def deduplicar(itens: list[Item], fracao_min: float) -> list[Item]:
                 continue
             if geoms[i].intersection(geoms[j]).area >= fracao_min * min(areas[i], areas[j]):
                 estado[j] = -1
-    return [it for it, e in zip(itens, estado, strict=True) if e == 1]
+    return [it for it, e in zip(itens, estado, strict=True) if e == 1] + unir_extensos(extensos)
+
+
+def unir_extensos(itens: list[Item]) -> list[Item]:
+    """Regioes extensas da mesma classe vistas em janelas vizinhas viram uma so, por uniao.
+
+    As mascaras estao na mesma grade de pixels, entao a uniao e exata e nao conta area
+    em dobro. Nao ha filtro de forma a preservar: regiao extensa mede area.
+    """
+    saida: list[Item] = []
+    for classe in sorted({it[2] for it in itens}):
+        da_classe = [it for it in itens if it[2] == classe]
+        uniao = unary_union([it[0] for it in da_classe])
+        for parte in uniao.geoms if hasattr(uniao, "geoms") else [uniao]:
+            if parte.is_empty or parte.geom_type != "Polygon":
+                continue
+            conf = max(it[1] for it in da_classe if it[0].intersects(parte))
+            saida.append((parte, conf, classe, float("inf"), False, True))
+    return saida
+
+
+def repartir(itens: list[Item], segmentos: gpd.GeoDataFrame, pedaco_min_m2: float) -> list[Item]:
+    """Corta cada regiao extensa nas divisas dos segmentos, para a area ir ao segmento certo."""
+    saida: list[Item] = []
+    arvore = STRtree(list(segmentos.geometry))
+    for it in itens:
+        if not it[5]:
+            saida.append(it)
+            continue
+        for k in arvore.query(it[0], predicate="intersects"):
+            pedaco = it[0].intersection(segmentos.geometry.iloc[int(k)])
+            for parte in pedaco.geoms if hasattr(pedaco, "geoms") else [pedaco]:
+                if parte.geom_type == "Polygon" and parte.area >= pedaco_min_m2:
+                    saida.append((parte, *it[1:]))
+    return saida
 
 
 def lados_ret_min(geom: BaseGeometry) -> tuple[float, float]:
@@ -98,7 +136,7 @@ def severidade(area_m2: float, faixas: dict) -> str:
 def medir(itens: list[Item], crs, gsd_m: float, faixas: dict) -> gpd.GeoDataFrame:
     """Tabela de defeitos. Toda medida sai da geometria em SRC projetado."""
     linhas = []
-    for geom, conf, classe, _folga, emenda in itens:
+    for geom, conf, classe, _folga, emenda, _extensa in itens:
         g = geom.simplify(gsd_m / 2).buffer(0)
         if g.is_empty or g.area <= 0:
             continue

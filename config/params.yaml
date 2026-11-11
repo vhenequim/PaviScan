@@ -28,6 +28,15 @@ classico:
   solidez_cheia: 0.92       # solidez a partir da qual a forma da confianca cheia
   croma_max: 40             # max - min dos canais RGB; acima disso o pixel nao e asfalto
   separacao_nucleo: 0.6     # watershed: nucleo = distancia a borda >= esta fracao da maior da regiao
+  solo_exposto: true        # segunda passada: revestimento perdido (cor de solo no meio do pavimento)
+  solo_contraste_min: 30    # contraste minimo da segunda passada, em niveis de (cinza / 2 + R - B)
+  solo_quente_min: 15       # R - B minimo do pixel: pintura e concreto claros, sem cor, nao entram
+  solo_matiz_max: 42        # matiz maximo em graus: solo vai do vermelho ao laranja; pintura amarela passa disso
+  exg_max: 20               # 2G - R - B acima disto e vegetacao e fica fora da segunda passada
+  solo_sobreposicao_max: 0.5  # regiao ja marcada como buraco nao entra de novo como solo exposto
+  solo_janela_fundo_m: 6.0  # o revestimento perdido forma faixas largas: janela de fundo maior
+  solo_fundo_percentil: 80  # fundo = pavimento mais "frio" da janela (basta 20 % de pavimento inteiro)
+  solo_area_max_m2: 80
 
 severidade:                 # por area do buraco, em m2. Faixas de trabalho, nao sao de norma
   media_a_partir_de: 0.25
@@ -36,6 +45,7 @@ severidade:                 # por area do buraco, em m2. Faixas de trabalho, nao
 segmentos:
   comprimento_m: 20
   resto_min_m: 5            # sobra menor que isto no fim do trecho entra no ultimo segmento
+  pedaco_min_m2: 0.05       # regiao extensa repartida por segmento: pedaco menor que isto e descartado
 
 raster:
   percentil_branco: 99.5    # raster que nao e uint8: este percentil vira 255, igual na imagem toda
@@ -64,6 +74,7 @@ pista_osm:                  # pista automatica: eixos do OpenStreetMap + cor do 
   classes: [motorway, trunk, primary, secondary, tertiary, unclassified, residential, living_street]
   meia_largura_m:           # corredor em volta do eixo; a cor do asfalto define a borda real
     padrao: 3.4
+    desenhado: 4.0          # eixo desenhado pelo usuario
     primary: 6.5
     secondary: 5.5
     tertiary: 4.5
@@ -71,9 +82,32 @@ pista_osm:                  # pista automatica: eixos do OpenStreetMap + cor do 
   faixa_referencia_m: 1.0   # meia largura da faixa no eixo onde o brilho do asfalto e medido
   pixels_referencia_min: 20 # com menos pixels cinzentos que isto no eixo, o trecho e ignorado
   saturacao_max: 0.22       # asfalto e cinza: saturacao HSV baixa (0 a 1)
+  exg_max: 20               # superficie "terra": 2G - R - B ate isto nao e vegetacao
+  brilho_claro: 0.72        # superficie "terra": mais claro que isto e sem cor e telhado ou concreto
   tolerancia_brilho: 0.13   # desvio de brilho HSV aceito em torno do asfalto do eixo (0 a 1)
   limpeza_m: 0.45           # abertura que solta calcada e ruido
   buraco_max_m2: 4.0        # furo interno menor que isto volta a ser pista (buraco, bueiro, pintura)
   dobra_max_graus: 30       # o eixo e partido em trechos retos nas curvas maiores que isto
   trecho_min_m: 12
   area_min_m2: 15
+
+orcamento:                  # precos em config/precos.csv, solucoes em config/solucoes.csv
+  pavimento: CBUQ           # CBUQ | PMF | TSD
+  terreno: regular          # bom | regular | ruim
+  bdi: 0.25                 # entra so no total
+  margem_corte_m: 0.30      # folga do retangulo de corte em volta do defeito
+  corte_pela_area: [solo_exposto]   # classes extensas: corte = area x folga_area, nao retangulo
+  folga_area: 1.2
+  limite_recapeamento: 0.15 # fracao do segmento em area de corte que dispara a opcao C
+  plano:                    # solucao recomendada por classe e severidade (A ou B)
+    panela: {baixa: A, media: A, alta: B}
+    solo_exposto: {baixa: B, media: B, alta: B}
+
+condicao:                   # indice de condicao de 0 a 100. E de trabalho: nao e IGG nem ICP de norma
+  peso_area: 8.0            # pontos perdidos por 1 % de area afetada
+  peso_densidade: 1.0       # pontos perdidos por defeito a cada 100 m
+  conceitos: {A: 85, B: 70, C: 50, D: 30}   # nota minima de cada conceito; abaixo de D e E
+
+acervo:
+  pasta_imagens: dados      # ortofotos enviadas pelo painel: uma pasta por imagem (orto.tif, pista, eixo)
+  previa_lado_px: 1400      # previa rapida usada na tela de entrada

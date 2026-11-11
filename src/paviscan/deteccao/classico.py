@@ -36,6 +36,15 @@ class Params:
     solidez_cheia: float
     croma_max: float
     separacao_nucleo: float
+    solo_exposto: bool
+    solo_contraste_min: float
+    solo_quente_min: float
+    solo_matiz_max: float
+    exg_max: float
+    solo_sobreposicao_max: float
+    solo_janela_fundo_m: float
+    solo_fundo_percentil: float
+    solo_area_max_m2: float
 
 
 def _disco(diametro_px: int) -> np.ndarray:
@@ -44,7 +53,12 @@ def _disco(diametro_px: int) -> np.ndarray:
 
 
 def _fundo(
-    cinza: np.ndarray, apoio: np.ndarray, gsd_m: float, p: Params
+    cinza: np.ndarray,
+    apoio: np.ndarray,
+    gsd_m: float,
+    p: Params,
+    janela_m: float | None = None,
+    percentil: float | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Asfalto sem defeito: percentil local so com os pixels de `apoio`.
 
@@ -59,20 +73,21 @@ def _fundo(
     peso = cv2.resize(v, (wr, hr), interpolation=cv2.INTER_AREA)
     red = (soma / np.maximum(peso, 1e-3)).clip(0, 255).astype(np.uint8)
     m = (peso > 0).astype(np.uint8)  # pixel reduzido vale se tiver algum apoio
-    lado = max(3, int(round(p.janela_fundo_m / (gsd_m * f))) | 1)
+    lado = max(3, int(round((janela_m or p.janela_fundo_m) / (gsd_m * f))) | 1)
     janela = np.ones((lado, lado), np.uint8)
-    fundo_r = rank.percentile(red, janela, mask=m, p0=p.fundo_percentil / 100.0)
+    p0 = (p.fundo_percentil if percentil is None else percentil) / 100.0
+    fundo_r = rank.percentile(red, janela, mask=m, p0=p0)
     tem_r = cv2.dilate(m, janela)
     fundo = cv2.resize(fundo_r, (w, h), interpolation=cv2.INTER_LINEAR).astype(np.float32)
     tem = cv2.resize(tem_r, (w, h), interpolation=cv2.INTER_NEAREST) > 0
     return fundo, tem
 
 
-def _limiar(valores: np.ndarray, p: Params) -> float:
+def _limiar(valores: np.ndarray, piso: float, k_mad: float) -> float:
     """max(piso, mediana + k x MAD). Otsu nao serve: inventa classe em pista limpa."""
     med = float(np.median(valores))
     mad = float(np.median(np.abs(valores - med)))
-    return max(float(p.contraste_min), med + p.k_mad * mad)
+    return max(float(piso), med + k_mad * mad)
 
 
 def _forma(parte: np.ndarray) -> tuple[float, float]:
@@ -105,14 +120,20 @@ def _separar(parte: np.ndarray, fracao_nucleo: float) -> list[np.ndarray]:
 
 
 class DetectorClassico:
-    """Anomalia escura local. Sem estado entre chamadas."""
+    """Anomalia local contra o pavimento em volta. Sem estado entre chamadas.
+
+    Duas passadas com a mesma receita: buraco escuro (sinal = cinza) e revestimento
+    perdido com solo exposto (sinal = quao "quente" e a cor, R - B).
+    """
 
     nome = "classico"
-    versao = "0.3.0"
+    versao = "0.5.1"
     limites = (
-        "O detector procura anomalias escuras locais no asfalto, sem aprendizado. Mancha de "
-        "oleo, remendo escuro, tampa de bueiro, poca, sarjeta, sombra pequena e veiculo escuro "
-        "aparecem como buraco. Use a confianca minima e a conferencia visual para separar os casos."
+        "O detector compara cada ponto com o pavimento em volta, sem aprendizado. Procura duas "
+        "coisas: anomalia escura (buraco) e cor de solo no meio do pavimento (revestimento "
+        "perdido). Mancha de oleo, remendo escuro, tampa de bueiro, poca, sarjeta, sombra pequena "
+        "e veiculo escuro aparecem como buraco; lama, areia e terra trazida por roda aparecem como "
+        "revestimento perdido. Use a confianca minima e a conferencia visual para separar os casos."
     )
 
     def __init__(self, **params: float) -> None:
@@ -121,19 +142,74 @@ class DetectorClassico:
     def detectar(self, img: np.ndarray, gsd_m: float, valida: np.ndarray) -> list[Deteccao]:
         p = self.p
         img = np.ascontiguousarray(img)
-        # asfalto e cinza: pixel colorido (vegetacao, veiculo, pintura, solo) sai da analise
+        valida = np.asarray(valida, dtype=bool)
+        # 1a passada, buraco escuro. Asfalto e cinza: pixel colorido (vegetacao, veiculo,
+        # pintura, solo) sai da analise
         croma = img.max(axis=2).astype(np.int16) - img.min(axis=2)
-        valida = np.asarray(valida, dtype=bool) & (croma <= p.croma_max)
+        cinza = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
+        saida = self._passada(
+            cinza, valida & (croma <= p.croma_max), gsd_m, p.contraste_min, "panela"
+        )
+        if not p.solo_exposto:
+            return saida
+        # 2a passada, revestimento perdido: onde a capa saiu aparece base ou solo, mais claro
+        # e mais "quente" (R - B alto) que o pavimento em volta. Forma faixas longas e
+        # irregulares, entao mede-se a area, sem filtro de forma, contra o pavimento mais
+        # escuro de uma janela larga. Vegetacao (verde dominante) e pintura (clara, mas sem
+        # cor) ficam fora
+        r, g, b = (img[..., k].astype(np.int16) for k in range(3))
+        quente = r - b
+        solo = np.clip(cinza.astype(np.int16) // 2 + quente, 0, 255).astype(np.uint8)
+        sem_vegetacao = (2 * g - r - b) <= p.exg_max
+        # solo e terra ficam entre o vermelho e o laranja; pintura amarela tem matiz maior
+        matiz = 2.0 * cv2.cvtColor(img, cv2.COLOR_RGB2HSV)[..., 0]
+        novas = self._passada(
+            255 - solo,
+            valida & sem_vegetacao,
+            gsd_m,
+            p.solo_contraste_min,
+            "solo_exposto",
+            extensa=True,
+            porta=(quente >= p.solo_quente_min) & (matiz <= p.solo_matiz_max),
+        )
+        ocupado = np.zeros(valida.shape, dtype=bool)
+        for d in saida:
+            ocupado |= d.mascara
+        for d in novas:  # a mesma regiao nao entra duas vezes
+            if (d.mascara & ocupado).sum() <= p.solo_sobreposicao_max * d.mascara.sum():
+                saida.append(d)
+        return saida
+
+    def _passada(
+        self,
+        sinal: np.ndarray,
+        valida: np.ndarray,
+        gsd_m: float,
+        piso: float,
+        classe: str,
+        extensa: bool = False,
+        porta: np.ndarray | None = None,
+    ) -> list[Deteccao]:
+        """Regioes onde `sinal` (uint8) fica abaixo do fundo local. `piso` e o contraste minimo.
+
+        `extensa`: mede area em vez de objeto (janela de fundo larga, sem filtro de forma e
+        sem o termo k x MAD, porque dano extenso nao e raro na imagem). `porta`: pixels que
+        podem entrar na regiao.
+        """
+        p = self.p
+        janela = p.solo_janela_fundo_m if extensa else p.janela_fundo_m
+        percentil = p.solo_fundo_percentil if extensa else p.fundo_percentil
+        area_max = p.solo_area_max_m2 if extensa else p.area_max_m2
+        k_mad = 0.0 if extensa else p.k_mad
         px2 = gsd_m * gsd_m
         if valida.sum() * px2 < p.area_min_m2:
             return []
 
-        # 1. cinza com desfoque leve
-        cinza = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
+        # 1. desfoque leve
         sigma = p.suavizacao_m / gsd_m
         if sigma > 0:
-            cinza = cv2.GaussianBlur(cinza, (0, 0), sigma)
-        cinza_f = cinza.astype(np.float32)
+            sinal = cv2.GaussianBlur(sinal, (0, 0), sigma)
+        sinal_f = sinal.astype(np.float32)
 
         # miolo da pista: longe alguns centimetros da borda
         r_borda = int(round(p.margem_borda_m / gsd_m))
@@ -146,23 +222,25 @@ class DetectorClassico:
         # 2 e 3. fundo local e limiar robusto, em duas passadas: a segunda estima o
         # fundo sem os pixels ja anomalos, para o buraco grande nao puxar a mediana
         d_morf = int(round(p.morfologia_m / gsd_m))
-        fundo, _ = _fundo(cinza, valida, gsd_m, p)
-        anomalia = fundo - cinza_f
-        limiar = _limiar(anomalia[miolo], p)
+        fundo, _ = _fundo(sinal, valida, gsd_m, p, janela, percentil)
+        anomalia = fundo - sinal_f
+        limiar = _limiar(anomalia[miolo], piso, k_mad)
         bruto = (anomalia > limiar) & miolo
         if not bruto.any():
             return []
         suspeito = cv2.dilate(bruto.astype(np.uint8), _disco(2 * d_morf + 1)) > 0
-        fundo2, tem = _fundo(cinza, valida & ~suspeito, gsd_m, p)
+        fundo2, tem = _fundo(sinal, valida & ~suspeito, gsd_m, p, janela, percentil)
         fundo = np.where(tem, fundo2, fundo)
-        anomalia = fundo - cinza_f
-        limiar = _limiar(
-            anomalia[miolo & ~suspeito] if (miolo & ~suspeito).any() else anomalia[miolo], p
-        )
+        anomalia = fundo - sinal_f
+        limpo = miolo & ~suspeito
+        limiar = _limiar(anomalia[limpo] if limpo.any() else anomalia[miolo], piso, k_mad)
 
         # 4. limpeza morfologica e componentes conexos
         el = _disco(d_morf)
-        binaria = ((anomalia > limiar) & miolo).astype(np.uint8)
+        binaria = (anomalia > limiar) & miolo
+        if porta is not None:
+            binaria &= porta
+        binaria = binaria.astype(np.uint8)
         binaria = cv2.morphologyEx(binaria, cv2.MORPH_OPEN, el)
         binaria = cv2.morphologyEx(binaria, cv2.MORPH_CLOSE, el)
         binaria[~valida] = 0
@@ -170,8 +248,8 @@ class DetectorClassico:
         if n <= 1:
             return []
 
-        gx = cv2.Sobel(cinza_f, cv2.CV_32F, 1, 0, ksize=3) / 8.0
-        gy = cv2.Sobel(cinza_f, cv2.CV_32F, 0, 1, ksize=3) / 8.0
+        gx = cv2.Sobel(sinal_f, cv2.CV_32F, 1, 0, ksize=3) / 8.0
+        gy = cv2.Sobel(sinal_f, cv2.CV_32F, 0, 1, ksize=3) / 8.0
         grad = cv2.magnitude(gx, gy)
 
         saida: list[Deteccao] = []
@@ -181,15 +259,15 @@ class DetectorClassico:
                 continue
             comp = rotulos[y : y + h, x : x + w] == i
             partes = [comp]
-            if _forma(comp)[0] < p.solidez_min:
+            if not extensa and _forma(comp)[0] < p.solidez_min:
                 partes = _separar(comp, p.separacao_nucleo)
             for parte in partes:
                 # 5. filtros de forma, em metros
                 area_m2 = float(parte.sum()) * px2
-                if not (p.area_min_m2 <= area_m2 <= p.area_max_m2):
+                if not (p.area_min_m2 <= area_m2 <= area_max):
                     continue
                 solidez, alongamento = _forma(parte)
-                if solidez < p.solidez_min or alongamento > p.alongamento_max:
+                if not extensa and (solidez < p.solidez_min or alongamento > p.alongamento_max):
                     continue
                 # 6. confianca: contraste contra o entorno, nitidez da borda e forma compacta
                 rec = (slice(y, y + h), slice(x, x + w))
@@ -206,8 +284,11 @@ class DetectorClassico:
                 c_forma = np.clip(
                     (solidez - p.solidez_min) / (p.solidez_cheia - p.solidez_min), 0.0, 1.0
                 )
-                confianca = float(c_contraste + c_borda + c_forma) / 3.0
+                if extensa:  # sem termo de forma: faixa irregular nao e menos real
+                    confianca = float(c_contraste + c_borda) / 2.0
+                else:
+                    confianca = float(c_contraste + c_borda + c_forma) / 3.0
                 mascara = np.zeros(valida.shape, dtype=bool)
                 mascara[rec] = parte
-                saida.append(Deteccao(mascara, round(confianca, 3)))
+                saida.append(Deteccao(mascara, round(confianca, 3), classe, extensa))
         return saida

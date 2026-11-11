@@ -48,9 +48,9 @@ def test_severidade_pelas_faixas():
 def test_do_mesmo_buraco_em_duas_janelas_fica_a_versao_maior():
     inteiro, truncado, outro = box(0, 0, 2, 1), box(1.2, 0, 2, 1), box(5, 5, 6, 6)
     itens = [
-        (truncado, 0.8, "panela", 200.0, False),  # cortado pela borda da janela: menor
-        (inteiro, 0.4, "panela", 10.0, True),
-        (outro, 0.5, "panela", 50.0, False),
+        (truncado, 0.8, "panela", 200.0, False, False),  # cortado pela borda da janela: menor
+        (inteiro, 0.4, "panela", 10.0, True, False),
+        (outro, 0.5, "panela", 50.0, False, False),
     ]
     unicos = geometria.deduplicar(itens, 0.2)
     assert len(unicos) == 2

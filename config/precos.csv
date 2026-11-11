@@ -1,0 +1,10 @@
+servico,unidade,preco_unit,fonte,data_base
+corte_e_limpeza,m2,10.00,PLACEHOLDER,
+pintura_de_ligacao,m2,3.00,PLACEHOLDER,
+imprimacao,m2,8.00,PLACEHOLDER,
+revestimento_cbuq,m3,1500.00,PLACEHOLDER,
+revestimento_pmf,m3,1100.00,PLACEHOLDER,
+revestimento_tsd,m2,20.00,PLACEHOLDER,
+escavacao_e_remocao,m3,60.00,PLACEHOLDER,
+base_brita_graduada,m3,300.00,PLACEHOLDER,
+fresagem,m2,15.00,PLACEHOLDER,
