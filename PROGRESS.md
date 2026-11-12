@@ -137,6 +137,11 @@ Resultado final de todos os levantamentos (detector 0.6.1, preços ilustrativos,
 
 O Uiramutã processa em cerca de 2 min; a geração da pista automática leva mais 3 min (arquivo de 1,2 GB sem pirâmides).
 
+## Comando único e trabalho em aberto (12/11)
+
+- `./rodar.sh` na raiz: cria o `.venv` e instala as dependências na primeira vez, depois sobe o painel. Documentado no topo do README.
+- Em aberto, sem commit: o usuário reclamou do mapa borrado e do editor de contorno travado. Causas medidas: o mapa mostra uma imagem só de até 4000 px (25 cm/px no Uiramutã contra 3,3 cm nativos) e o contorno do detector chega a mais de mil vértices arrastáveis. Já aplicado na árvore de trabalho, mas sem rodar os testes de novo: orçamento vetorizado, contorno simplificado para editar (`revisao.para_edicao`), recorte do editor em JPEG. `painel/ladrilhos.py` (ortofoto em ladrilhos sob demanda) está escrito e ainda não ligado ao `_mapa`. O usuário mandou parar antes de terminar.
+
 ## Decisões
 - 10/11: escopo reduzido a um retrato de uma imagem. Orçamento e série temporal saíram.
 - 10/11: detector por anomalia escura local com limiar robusto (mediana + k x MAD), não Otsu nem watershed puro. YOLO do mestrado entra depois pela interface `Detector`.

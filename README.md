@@ -2,7 +2,25 @@
 
 Condição do pavimento a partir de ortofoto de drone: a imagem entra, os defeitos saem localizados e medidos, e um painel mostra a condição por via, os trechos prioritários, a estimativa de reparo e um relatório pronto para imprimir. Retrato de uma imagem só, tudo em Python. Plano em `PLAN.md`, estado em `PROGRESS.md`.
 
-## Instalar
+## Rodar (um comando só)
+
+```bash
+./rodar.sh
+```
+
+Na primeira vez o script cria o ambiente Python em `.venv` e instala as dependências (precisa de internet e leva alguns minutos). Nas seguintes, só sobe o painel e abre o navegador em http://localhost:8501. Para parar, `Ctrl+C`.
+
+| Comando | O que faz |
+|---|---|
+| `./rodar.sh` | Painel na porta 8501 |
+| `./rodar.sh --porta 8502` | Outra porta (use se a 8501 já estiver ocupada) |
+| `./rodar.sh --runs pasta/` | Outra pasta de levantamentos |
+
+O script usa o `uv` se ele estiver instalado; senão, procura um Python 3.10 a 3.13.
+
+## Instalar à mão
+
+Só é preciso para usar a linha de comando `paviscan` direto ou rodar os testes; o `rodar.sh` já faz isto sozinho.
 
 ```bash
 python3.12 -m venv .venv && source .venv/bin/activate   # ou: uv venv --python 3.12 .venv
@@ -14,7 +32,7 @@ Use Python 3.10 a 3.13 (as rodas do rasterio e do OpenCV ainda não cobrem vers�
 ## Usar pelo painel
 
 ```bash
-paviscan painel --runs runs/
+./rodar.sh                     # ou, com o ambiente ativado: paviscan painel --runs runs/
 ```
 
 Na aba **Nova análise**:
