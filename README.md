@@ -58,14 +58,29 @@ As demais abas:
 | Vias e trechos | Conceito e índice por via, perfil ao longo da pista, piores segmentos |
 | Inspeção | Revisão manual: marcar cada área como defeito ou falso positivo, corrigir o contorno e adicionar área que faltou |
 | Orçamento | Plano recomendado e alternativas, por via e por serviço, com preços, BDI, revestimento e terreno ajustáveis |
-| Dados e relatório | Relatório executivo em HTML (imprime em PDF) da área e dos defeitos escolhidos num menu, tabela e downloads CSV, XLSX e GeoJSON |
+| Dados e relatório | Relatório executivo em PDF ou HTML da área e dos defeitos escolhidos (por vias e segmentos ou desenhando no mapa), tabela e downloads CSV, XLSX e GeoJSON |
 | Próximos passos | O caminho para o modelo treinado, com a base pública UAV-PDD2023 |
 
 Os filtros da barra lateral (tipo de defeito, área, severidade, confiança, via, segmento) valem para todas as abas, inclusive orçamento e relatório.
 
-Para o relatório há ainda o menu **O que entra no relatório**: a área (vias e faixa de segmentos) e os defeitos (severidade, tipo, só os conferidos na revisão, e tirar defeitos um a um). Os indicadores, o orçamento e o mapa do relatório saem só desse recorte; o mapa é recortado na área escolhida e o topo do relatório diz qual foi o recorte.
+Para o relatório há ainda o menu **O que entra no relatório**:
 
-No mapa, cada defeito aparece dentro do seu **retângulo na via**: o menor retângulo com um lado paralelo e outro perpendicular ao eixo da via que envolve o defeito. É o mesmo retângulo das miniaturas (em amarelo) e do mapa do relatório, e é por ele, mais a folga de 30 cm, que o orçamento mede o corte do remendo.
+- **Área:** por vias e faixa de segmentos, ou **desenhando no mapa** um ou mais polígonos ou retângulos. Todo defeito que tocar uma área desenhada entra inteiro, mesmo que só um vértice dele esteja dentro.
+- **Defeitos:** severidade, tipo e "só os conferidos". Em seguida, uma tabela com todos os defeitos da área, com duas caixas por linha: "No relatório" e "Com imagem". Há botões para marcar ou desmarcar todos.
+- **Gerar PDF** e **Gerar HTML** montam o arquivo no clique e já baixam. O relatório traz indicadores, o mapa recortado na área, a condição por via, os trechos prioritários, o orçamento do recorte, a lista de todos os defeitos escolhidos e a imagem de cada um que ficou marcado. O defeito sem miniatura ganha uma na hora, se a ortofoto estiver disponível. O levantamento inteiro do Uiramutã (916 defeitos) dá um PDF de 69 páginas e 17 MB em cerca de 9 s.
+
+No mapa, cada remendo aparece como um **retângulo na via**: o menor retângulo com um lado paralelo e outro perpendicular ao eixo da via que envolve os defeitos dele. Defeitos viram um remendo só (`agrupamento` no `params.yaml`) quando:
+
+- os retângulos deles se tocam ou se sobrepõem;
+- um deles é pequeno (menor lado abaixo de 15 cm) e fica a até 30 cm do outro.
+
+O retângulo do grupo é refeito, e se encostar em outro os dois também se juntam. As referências:
+
+- 150 mm é a dimensão mínima de panela do manual de identificação de defeitos do programa LTPP da FHWA ([FHWA-RD-03-031](https://www.fhwa.dot.gov/publications/research/infrastructure/pavements/ltpp/reports/03031/01.cfm)).
+- 300 mm vem da orientação da FHWA para juntar reparos próximos ([reparo parcial](https://www.fhwa.dot.gov/pavement/concrete/repair04.cfm)). Essa orientação é para pavimento de concreto: não achei regra numérica para asfalto.
+- Especificações de conservação que seguem os manuais do DNIT pedem pôr o máximo de defeitos próximos num remendo só, evitando remendos muito próximos.
+
+O retângulo é o mesmo nas miniaturas (em amarelo) e no mapa do relatório. No orçamento, os buracos se juntam só entre si (`grupo_corte`). O corte é o retângulo deles mais a folga de 30 cm, repartido pela área de cada um. Revestimento perdido continua orçado pela própria área, e por isso não puxa buracos para o mesmo corte nem é pago duas vezes.
 
 ### Revisão manual
 

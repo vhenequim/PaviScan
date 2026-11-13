@@ -282,19 +282,27 @@ def recorte_relatorio(
     classes: list[str] | None = None,
     so_conferidos: bool = False,
     fora: list[int] | tuple = (),
+    areas=None,
 ) -> tuple[gpd.GeoDataFrame, gpd.GeoDataFrame]:
     """Defeitos e segmentos que entram no relatorio. None = nao filtra.
 
+    `areas`: geometria desenhada no mapa; substitui vias e faixa. Defeito que toca a area
+    entra inteiro, e os segmentos sao os que tocam a area ou tem defeito escolhido.
     A area (vias e faixa de segmentos) define os segmentos, que sao o denominador dos
     indicadores; os defeitos sao os desses segmentos que passam nos filtros. `so_conferidos`:
     so confirmados na revisao e adicionados a mao. `fora`: ids tirados um a um.
     """
-    s = filtrar_segmentos(segmentos, vias=vias)
-    if seg_de is not None:
-        s = s[s["segmento"] >= int(seg_de)]
-    if seg_ate is not None:
-        s = s[s["segmento"] <= int(seg_ate)]
-    d = defeitos[defeitos["segmento"].isin(s["segmento"])]
+    if areas is not None:  # area desenhada no mapa (no SRC do levantamento)
+        d = defeitos[defeitos.geometry.intersects(areas)]  # tocou, entra o defeito inteiro
+        com_defeito = segmentos["segmento"].isin(d["segmento"])
+        s = segmentos[segmentos.geometry.intersects(areas) | com_defeito]
+    else:
+        s = filtrar_segmentos(segmentos, vias=vias)
+        if seg_de is not None:
+            s = s[s["segmento"] >= int(seg_de)]
+        if seg_ate is not None:
+            s = s[s["segmento"] <= int(seg_ate)]
+        d = defeitos[defeitos["segmento"].isin(s["segmento"])]
     if severidades is not None:
         d = d[d["severidade"].isin(list(severidades))]
     if classes is not None and "classe" in d.columns:
@@ -304,6 +312,45 @@ def recorte_relatorio(
     if len(fora):
         d = d[~d["id"].isin([int(i) for i in fora])]
     return d, s
+
+
+def tabela_da_escolha(defeitos: gpd.GeoDataFrame, fora, sem_imagem) -> pd.DataFrame:
+    """Uma linha por defeito da area escolhida, com "No relatorio" e "Com imagem"."""
+    d = defeitos.sort_values(["via", "segmento", "id"]) if len(defeitos) else defeitos
+    ids = d["id"].astype(int).tolist() if len(d) else []
+    return pd.DataFrame(
+        {
+            "No relatório": [i not in fora for i in ids],
+            "Com imagem": [i not in sem_imagem for i in ids],
+            "Id": ids,
+            "Tipo": [ROTULO_CLASSE.get(c, c) for c in d.get("classe", [])],
+            "Severidade": [ROTULO_SEVERIDADE.get(s, s) for s in d.get("severidade", [])],
+            "Área (m²)": d["area_m2"].tolist() if len(d) else [],
+            "Via": d["via"].astype(str).tolist() if len(d) else [],
+            "Segmento": d["segmento"].astype(int).tolist() if len(d) else [],
+            "Revisão": [
+                ROTULO_SITUACAO.get(r, r) for r in d.get("revisao", ["pendente"] * len(ids))
+            ],
+        }
+    ).astype(
+        {"No relatório": bool, "Com imagem": bool, "Id": "int64", "Área (m²)": float,
+         "Segmento": "int64", "Tipo": str, "Severidade": str, "Via": str, "Revisão": str}
+    )  # fmt: skip
+
+
+def atualizar_escolha(tabela: pd.DataFrame, fora: set, sem_imagem: set) -> tuple[set, set]:
+    """Junta o que foi marcado na tabela com o que ja estava escolhido fora dela.
+
+    Defeito que nao esta na tabela agora (outro filtro) guarda a marcacao que tinha.
+    """
+    ids = set(tabela["Id"].astype(int))
+    fora = (set(fora) - ids) | {
+        int(i) for i, e in zip(tabela["Id"], tabela["No relatório"], strict=True) if not e
+    }
+    sem = (set(sem_imagem) - ids) | {
+        int(i) for i, e in zip(tabela["Id"], tabela["Com imagem"], strict=True) if not e
+    }
+    return fora, sem
 
 
 def area_e_extensao(segmentos: gpd.GeoDataFrame) -> dict:
@@ -368,7 +415,16 @@ def para_mapa(gdf: gpd.GeoDataFrame, colunas: list[str]) -> dict:
     if gdf.empty:
         return {"type": "FeatureCollection", "features": []}
     cols = [c for c in colunas if c in gdf.columns]
-    return json.loads(gdf[[*cols, "geometry"]].to_crs(4326).to_json())
+    g = gdf[[*cols, "geometry"]].copy()
+    colecao = g.geometry.geom_type == "GeometryCollection"
+    if colecao.any():  # segmento com sobra de linha: folium quebra com colecao mista
+        from shapely.geometry import MultiPolygon
+
+        from paviscan.geometria import poligonos
+
+        g.loc[colecao, "geometry"] = [MultiPolygon(poligonos(x)) for x in g.geometry[colecao]]
+        g = g[~g.geometry.is_empty]
+    return json.loads(g.to_crs(4326).to_json())
 
 
 def arquivo_previa(run: Path) -> Path | None:

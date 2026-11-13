@@ -82,10 +82,11 @@ def _gravar_revisao(
     refazer = atual[atual["corrigido"]]
     if refazer.empty:
         return
+    rets = geometria.retangulo_de_cada(geometria.agrupar(atual, params["agrupamento"]))
     with ingestao.abrir(orto) as ds:
         escala = ingestao.escala_uint8(ds, params["raster"])
         for ident, geom, caixa in zip(
-            refazer["id"], refazer.geometry, geometria.caixas_de(refazer), strict=True
+            refazer["id"], refazer.geometry, rets.loc[refazer.index], strict=True
         ):
             destino = saida / "recortes" / f"rev_{int(ident)}.jpg"
             exportar.recorte(ds, geom, destino, params["recortes"], escala, caixa)
@@ -221,6 +222,7 @@ def processar(
             )
         defeitos = indicadores.atribuir_segmento(defeitos, segmentos)
         defeitos = geometria.com_caixa(defeitos, pista_mod.angulos(segmentos))
+        defeitos = geometria.agrupar_tudo(defeitos, params)
         segmentos = indicadores.por_segmento(defeitos, segmentos)
 
         avisar(0.92, "Gravando previa e recortes")

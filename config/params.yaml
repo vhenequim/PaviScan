@@ -53,6 +53,11 @@ contorno:                   # contorno do defeito com menos vertices; a area med
   tolerancia_rel: 0.03      # mais esta fracao do lado equivalente (raiz da area), em defeito grande
   variacao_area_max: 0.2    # parte cuja area mudaria mais que isso (forma fina) fica so sem o serrilhado
 
+agrupamento:                # defeitos que viram um remendo so: um retangulo na via para todos
+  distancia_juntar_m: 0.0   # retangulos a ate esta distancia se juntam (0: so quando se tocam)
+  lado_min_m: 0.15          # menor lado abaixo disto e defeito pequeno (LTPP/FHWA: panela tem no minimo 150 mm)
+  distancia_pequeno_m: 0.30 # defeito pequeno se junta ao vizinho a ate esta distancia (FHWA: reparos a menos de 300 mm viram um so)
+
 segmentos:
   comprimento_m: 20
   resto_min_m: 5            # sobra menor que isto no fim do trecho entra no ultimo segmento

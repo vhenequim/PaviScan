@@ -162,3 +162,68 @@ def test_contorno_leve_em_multipoligono_mantem_cada_parte_no_lugar():
     for antes, depois in zip((a, b), partes, strict=True):
         assert abs(depois.area - antes.area) < 1e-6  # cada parte com a propria area
         assert depois.centroid.distance(antes.centroid) < 1e-3  # e no proprio lugar
+
+
+AGRUPAR = {"distancia_juntar_m": 0.0, "lado_min_m": 0.15, "distancia_pequeno_m": 0.30}
+
+
+def _defeitos_em(*geoms):
+    import geopandas as gpd
+
+    return gpd.GeoDataFrame(
+        {"id": list(range(1, len(geoms) + 1)), "angulo_via": 0.0,
+         "area_m2": [g.area for g in geoms], "severidade": ["baixa"] * len(geoms)},
+        geometry=list(geoms), crs="EPSG:31980",
+    )  # fmt: skip
+
+
+def test_retangulos_que_se_tocam_viram_um_so():
+    a, b = box(0, 0, 1, 1), box(1, 0.5, 2, 1.5)  # encostam na borda
+    c = box(5, 0, 6, 1)  # longe
+    g = geometria.agrupar(_defeitos_em(a, b, c), AGRUPAR)
+    assert g["grupo"].tolist() == [1, 1, 2]
+    rets = geometria.retangulos(g)
+    assert len(rets) == 2 and rets.loc[0, "n"] == 2
+    assert np.isclose(rets.loc[0, "ao_longo_m"], 2.0) and np.isclose(
+        rets.loc[0, "transversal_m"], 1.5
+    )
+
+
+def test_retangulo_do_grupo_que_cresce_e_encosta_em_outro_tambem_junta():
+    # a e b se tocam; o retangulo deles (0..2 x 0..2) encosta em c, que nao toca nem a nem b
+    a, b = box(0, 0, 1, 0.4), box(1, 1.6, 2, 2)
+    ponte = box(0.9, 0.3, 1.1, 1.7)  # liga a e b
+    c = box(1.5, 0.5, 2.5, 1.0)  # dentro do retangulo do grupo, sem tocar nenhum dos tres
+    g = geometria.agrupar(_defeitos_em(a, b, ponte, c), AGRUPAR)
+    assert g["grupo"].nunique() == 1
+
+
+def test_buraco_pequeno_junta_ao_vizinho_a_ate_30_cm_e_o_normal_nao():
+    grande = box(0, 0, 1, 1)
+    pequeno = box(1.2, 0.4, 1.3, 0.5)  # 10 cm de lado, a 20 cm
+    longe = box(1.8, 0.4, 1.9, 0.5)  # pequeno, mas a 50 cm do outro pequeno e 80 cm do grande
+    normal = box(-0.5, 0, -0.25, 0.3)  # 25 cm de lado, a 25 cm: nao e pequeno, nao junta
+    g = geometria.agrupar(_defeitos_em(grande, pequeno, longe, normal), AGRUPAR)
+    grupo = dict(zip(g["id"], g["grupo"], strict=True))
+    assert grupo[1] == grupo[2] and grupo[3] != grupo[1] and grupo[4] != grupo[1]
+
+
+def test_revestimento_perdido_nao_junta_buracos_para_o_corte():
+    """No mapa, tudo que encosta e um retangulo; no orcamento, so os buracos entre si."""
+    buraco_a, buraco_b = box(0, 0, 0.5, 0.5), box(2.0, 0, 2.5, 0.5)
+    faixa = box(0.4, 0.1, 2.1, 0.4)  # revestimento perdido encostando nos dois
+    d = _defeitos_em(buraco_a, buraco_b, faixa)
+    d["classe"] = ["panela", "panela", "solo_exposto"]
+    params = {"agrupamento": AGRUPAR, "orcamento": {"corte_pela_area": ["solo_exposto"]}}
+    g = geometria.agrupar_tudo(d, params)
+    assert g["grupo"].nunique() == 1  # o mapa mostra um retangulo so
+    assert g["grupo_corte"].iloc[0] != g["grupo_corte"].iloc[1]  # o corte e de cada buraco
+    assert np.isnan(g["grupo_corte"].iloc[2])  # a faixa e paga pela area
+
+
+def test_retangulos_ignoram_geometria_vazia():
+    import geopandas as gpd
+
+    d = gpd.GeoDataFrame({"id": [1, 2], "area_m2": [1.0, 0.0], "severidade": ["baixa", "baixa"]},
+                         geometry=[box(0, 0, 1, 1), None], crs="EPSG:31980")  # fmt: skip
+    assert len(geometria.retangulos(d)) == 1

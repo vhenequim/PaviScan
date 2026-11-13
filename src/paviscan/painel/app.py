@@ -5,12 +5,16 @@ from __future__ import annotations
 import html
 import math
 import os
+from functools import partial
 from pathlib import Path
 
+import geopandas as gpd
 import pandas as pd
 import plotly.express as px
 import pydeck as pdk
 import streamlit as st
+from shapely import make_valid
+from shapely.geometry import shape
 
 from paviscan import acervo, base_publica, geometria, marca, orcamento, relatorio, revisao
 from paviscan.painel import dados
@@ -46,6 +50,9 @@ if PUBLICADO:
     ABAS.remove("Nova análise")
 
 st.set_page_config(page_title="PaviScan", page_icon=marca.icone(), layout="wide")
+# o mapa de area do relatorio estava na tela na ultima execucao que terminou? (ver o fim do
+# arquivo; execucao interrompida pela seguinte nao conta)
+st.session_state["_mapa_area_agora"] = False
 st.markdown(marca.css(), unsafe_allow_html=True)
 
 
@@ -120,6 +127,15 @@ def _dica_defeito(linha) -> str:
     )
 
 
+def _dica_grupo(r) -> str:
+    """Dica do retangulo de reparo (um ou mais defeitos)."""
+    quais = "defeito #" + str(r.ids[0]) if r.n == 1 else f"{r.n} defeitos juntos num remendo"
+    return (
+        f"<b>Retângulo de reparo {int(r.grupo)}</b><br/>{quais}<br/>"
+        f"{fmt(r.ao_longo_m)} × {fmt(r.transversal_m)} m na via · {fmt(r.area_m2)} m² de defeito"
+    )
+
+
 def _caixa_txt(linha) -> str:
     """'1,20 × 0,80 m' (ao longo da via × transversal), ou o retangulo minimo em run antigo."""
     if hasattr(linha, "caixa_ao_longo_m"):
@@ -189,8 +205,11 @@ def _mapa(det, seg, cond_seg, resumo, imagem, mostrar_seg: bool, mostrar_orto: b
                 pickable=True,
             )
         )
-        # caixa de cada defeito: o menor retangulo paralelo a via que o envolve
-        caixas = d[["id", "cor_linha", "dica"]].set_geometry(geometria.caixas_de(d))
+        # retangulo de reparo: o menor retangulo paralelo a via que envolve o grupo
+        caixas = geometria.retangulos(d)
+        caixas["id"] = caixas["id_maior"]  # clicar no retangulo abre o maior defeito dele
+        caixas["cor_linha"] = [[*COR_RGB[s], 255] for s in caixas["severidade"]]
+        caixas["dica"] = [_dica_grupo(r) for r in caixas.itertuples()]
         camadas.append(
             pdk.Layer(
                 "GeoJsonLayer",
@@ -281,17 +300,79 @@ def _chave(*partes) -> str:
     return format(zlib.crc32(repr(partes).encode()), "x")
 
 
-def _escolha_do_relatorio(run: Path, det, seg_f):
-    """Menu do relatorio: area (vias e faixa de segmentos) e defeitos que entram.
+def _mapa_de_area(run: Path, resumo: dict, det, seg, areas: list[dict], chave: str):
+    """Mapa para desenhar a area do relatorio (um ou mais poligonos ou retangulos).
 
-    Parte do que os filtros da barra lateral ja deixaram. Devolve (defeitos, segmentos,
-    frase do recorte ou None quando entra tudo).
+    Mostra a ortofoto, os segmentos e os retangulos de reparo. `areas`: poligonos ja
+    desenhados (GeoJSON em graus), que voltam editaveis. Devolve os poligonos atuais em
+    GeoJSON (graus), ou None quando nada mudou desde que o mapa abriu.
+    """
+    try:
+        import folium
+        from folium.plugins import Draw
+        from streamlit_folium import st_folium
+    except ImportError:
+        st.error("Para desenhar na tela instale: pip install folium streamlit-folium")
+        return None
+    (lat_s, lon_o), (lat_n, lon_l) = resumo["previa_limites"]
+    limites = [[lat_s, lon_o], [lat_n, lon_l]]
+    mapa = folium.Map(location=[(lat_s + lat_n) / 2, (lon_o + lon_l) / 2], tiles=None,
+                      max_zoom=23, zoom_snap=0.25)  # fmt: skip
+    folium.TileLayer("OpenStreetMap", max_native_zoom=19, max_zoom=23).add_to(mapa)
+    imagem = _imagem(str(run), _carimbo(run))
+    if imagem:
+        folium.raster_layers.ImageOverlay(image=imagem, bounds=limites).add_to(mapa)
+    if len(seg):
+        folium.GeoJson(
+            dados.para_mapa(seg, ["segmento"]), interactive=False,
+            style_function=lambda _: {"color": "#FFFFFF", "weight": 1, "fillOpacity": 0.0},
+        ).add_to(mapa)  # fmt: skip
+    if len(det):
+        rets = geometria.retangulos(det)
+        folium.GeoJson(
+            dados.para_mapa(rets, ["severidade"]), interactive=False,
+            style_function=lambda f: {"color": COR.get(f["properties"]["severidade"], "#FFD60A"),
+                                      "weight": 2, "fillOpacity": 0.15},
+        ).add_to(mapa)  # fmt: skip
+    grupo = folium.FeatureGroup(name="area do relatorio")
+    for g in areas:
+        for parte in geometria.poligonos(shape(g)):
+            folium.Polygon(
+                locations=[(y, x) for x, y in parte.exterior.coords],
+                color="#2E86FF", weight=3, fill_opacity=0.08,
+            ).add_to(grupo)  # fmt: skip
+    grupo.add_to(mapa)
+    estilo = {"shapeOptions": {"color": "#2E86FF", "weight": 3, "fillOpacity": 0.08}}
+    opcoes = {k: False for k in ("polyline", "circle", "marker", "circlemarker")}
+    opcoes.update(polygon=estilo, rectangle=estilo)
+    desenho = Draw(feature_group=grupo, draw_options=opcoes,
+                   edit_options={"edit": False, "remove": True})  # fmt: skip
+    desenho.add_to(mapa)
+    _edicao_direta(grupo, desenho, limites).add_to(mapa)
+    saida = st_folium(mapa, height=520, width=None, returned_objects=["all_drawings"], key=chave)
+    desenhos = (saida or {}).get("all_drawings")
+    if desenhos is None:
+        return None
+    return [
+        d["geometry"]
+        for d in desenhos
+        if d.get("geometry", {}).get("type") in ("Polygon", "MultiPolygon")
+    ]
+
+
+def _escolha_do_relatorio(run: Path, det, seg_f, resumo: dict):
+    """Menu do relatorio: area (vias e segmentos, ou desenhada no mapa) e defeitos que entram.
+
+    Parte do que os filtros da barra lateral ja deixaram. Todos os defeitos da area entram
+    e aparecem no relatorio; a tabela deixa tirar cada um e tirar a imagem de cada um.
+    Devolve (defeitos, segmentos, frase do recorte ou None, ids com imagem).
 
     A escolha fica tambem em `rel_salvo:<run>`, fora dos widgets: o Streamlit descarta o
     estado do widget que nao foi desenhado (outra secao aberta), e as chaves mudam quando
     as opcoes mudam. Defeito tirado a mao que some da lista por outro filtro continua tirado.
     """
     salvo = st.session_state.setdefault(f"rel_salvo:{run.name}", {})
+    salvo.setdefault("ver", 0)
     seg_disp = seg_f.sort_values("segmento")
     vias_todas = list(dict.fromkeys(seg_disp["via"].astype(str)))
     presentes = set(det["classe"]) if len(det) else set()
@@ -311,25 +392,83 @@ def _escolha_do_relatorio(run: Path, det, seg_f):
     def guardar(nome: str, valor: list, opcoes: list) -> None:
         salvo[nome] = {"todas": set(valor) >= set(opcoes), "valor": list(valor)}
 
+    def limpar_areas() -> None:
+        salvo["areas"] = []
+        salvo["n_mapa"] = salvo.get("n_mapa", 0) + 1
+
+    def marcar_todos(coluna: str, valor: bool, ids: list[int]) -> None:
+        nome = "fora" if coluna == "entra" else "sem_imagem"
+        atual = set(salvo.get(nome, []))
+        salvo[nome] = sorted(atual - set(ids)) if valor else sorted(atual | set(ids))
+        salvo["ver"] += 1  # tabela nova, com as marcas novas
+
     with st.container(border=True):
         st.markdown("**O que entra no relatório**")
-        c1, c2 = st.columns([1.3, 1])
-        vias = c1.multiselect(
-            "Vias", vias_todas, default=lembrado("vias", vias_todas),
-            key=f"rel_vias:{_chave(run.name, vias_todas)}", placeholder="Escolha ao menos uma via",
-        )  # fmt: skip
-        segs = seg_disp[seg_disp["via"].astype(str).isin(vias)]["segmento"].astype(int).tolist()
-        de, ate = (segs[0], segs[-1]) if segs else (None, None)
-        if len(segs) > 1:
-            guardada = salvo.get("segs") or {"cheia": True, "faixa": (segs[0], segs[-1])}
-            faixa = tuple(guardada["faixa"])
-            if guardada["cheia"] or not (faixa[0] in segs and faixa[1] in segs):
-                faixa = (segs[0], segs[-1])  # faixa inteira acompanha a lista de segmentos
-            de, ate = c2.select_slider(
-                "Segmentos (área do relatório)", options=segs, value=faixa,
-                key=f"rel_segs:{_chave(run.name, segs)}",
-                help="Os segmentos são numerados ao longo de cada via. O mapa do relatório mostra só esta área.",
+        modos = ["Vias e segmentos", "Desenhar no mapa"]
+        modo = st.segmented_control(
+            "Como escolher a área", modos, default=salvo.get("modo", modos[0]),
+            key=f"rel_modo:{run.name}",
+        ) or modos[0]  # fmt: skip
+        salvo["modo"] = modo
+        vias, de, ate, segs, areas_geo = vias_todas, None, None, [], None
+        if modo == "Desenhar no mapa":
+            st.caption(
+                "Desenhe um ou mais polígonos (ou retângulos) com as ferramentas à esquerda do mapa. "
+                "Entra no relatório todo defeito que tocar uma área desenhada, inteiro, mesmo que só "
+                "um vértice dele esteja dentro. Dá para ajustar as áreas pelos vértices ou apagar com a lixeira."
+            )
+            # O st_folium recria o componente sempre que o JS do mapa muda, e o desenho feito
+            # nesse meio-tempo se perde. Por isso o mapa abre com as areas de quando entrou na
+            # tela e so e remontado se saiu da tela ou se mudou o resto do que ele mostra;
+            # enquanto a pessoa desenha, quem guarda as areas novas e o navegador.
+            assinatura = _chave(
+                run.name, det["id"].astype(int).tolist(), len(seg_f), salvo.get("n_mapa", 0)
+            )
+            na_tela = st.session_state.get("_mapa_area_antes") == run.name
+            if (
+                not na_tela
+                or salvo.get("mapa_assinatura") != assinatura
+                or "areas_iniciais" not in salvo
+            ):
+                salvo["areas_iniciais"] = list(salvo.get("areas", []))
+            salvo["mapa_assinatura"] = assinatura
+            st.session_state["_mapa_area_agora"] = run.name
+            novas = _mapa_de_area(
+                run, resumo, det, seg_f, salvo["areas_iniciais"],
+                f"rel_mapa:{run.name}:{salvo.get('n_mapa', 0)}",
             )  # fmt: skip
+            if novas is not None:
+                salvo["areas"] = novas
+            if salvo.get("areas"):
+                st.button("Limpar as áreas desenhadas", on_click=limpar_areas)
+                # poligono que se cruza (o Leaflet.draw deixa) vira valido antes de unir
+                pols = [
+                    p for g in salvo["areas"] for p in geometria.poligonos(make_valid(shape(g)))
+                ]
+                if pols:
+                    geo = gpd.GeoSeries(pols, crs=4326)
+                    areas_geo = (geo.to_crs(seg_f.crs) if seg_f.crs else geo).union_all()
+        else:
+            c1, c2 = st.columns([1.3, 1])
+            vias = c1.multiselect(
+                "Vias", vias_todas, default=lembrado("vias", vias_todas),
+                key=f"rel_vias:{_chave(run.name, vias_todas)}", placeholder="Escolha ao menos uma via",
+            )  # fmt: skip
+            segs = seg_disp[seg_disp["via"].astype(str).isin(vias)]["segmento"].astype(int).tolist()
+            de, ate = (segs[0], segs[-1]) if segs else (None, None)
+            if len(segs) > 1:
+                guardada = salvo.get("segs") or {"cheia": True, "faixa": (segs[0], segs[-1])}
+                faixa = tuple(guardada["faixa"])
+                if guardada["cheia"] or not (faixa[0] in segs and faixa[1] in segs):
+                    faixa = (segs[0], segs[-1])  # faixa inteira acompanha a lista de segmentos
+                de, ate = c2.select_slider(
+                    "Segmentos (área do relatório)", options=segs, value=faixa,
+                    key=f"rel_segs:{_chave(run.name, segs)}",
+                    help="Os segmentos são numerados ao longo de cada via. O mapa do relatório mostra só esta área.",
+                )  # fmt: skip
+            guardar("vias", vias, vias_todas)
+            if len(segs) > 1:
+                salvo["segs"] = {"cheia": (de, ate) == (segs[0], segs[-1]), "faixa": (de, ate)}
         c3, c4, c5 = st.columns([1.2, 1.3, 1])
         sev = c3.multiselect(
             "Severidade", SEVERIDADES[::-1], default=lembrado("sev", SEVERIDADES[::-1]),
@@ -344,39 +483,70 @@ def _escolha_do_relatorio(run: Path, det, seg_f):
             "Só os conferidos", value=bool(salvo.get("so_conf", False)), key=f"rel_conf:{run.name}",
             help="Só as áreas confirmadas na revisão ou adicionadas à mão.",
         )  # fmt: skip
-        d_area, s_area = dados.recorte_relatorio(det, seg_f, vias, de, ate, sev, classes, so_conf)
-        ordem = d_area.sort_values("area_m2", ascending=False)
-        rotulos = {
-            int(r.id): f"#{int(r.id)} · {ROTULO_CLASSE.get(r.classe, r.classe)} · "
-            f"{fmt(r.area_m2)} m² · segmento {int(r.segmento)}"
-            for r in ordem.itertuples()
-        }  # fmt: skip
-        tirados = set(salvo.get("fora", []))
-        fora = st.multiselect(
-            "Tirar defeitos específicos", list(rotulos), format_func=rotulos.get,
-            default=[i for i in rotulos if i in tirados],
-            key=f"rel_fora:{_chave(run.name, list(rotulos))}", placeholder="Nenhum",
-        )  # fmt: skip
-        # os tirados que estao fora da lista agora (outro filtro) continuam guardados
-        tirados = (tirados - set(rotulos)) | set(fora)
-        guardar("vias", vias, vias_todas)
         guardar("sev", sev, SEVERIDADES)
         guardar("classes", classes, classes_todas)
-        salvo.update(so_conf=so_conf, fora=sorted(tirados))
-        if len(segs) > 1:
-            salvo["segs"] = {"cheia": (de, ate) == (segs[0], segs[-1]), "faixa": (de, ate)}
+        salvo["so_conf"] = so_conf
+        if modo == "Desenhar no mapa" and areas_geo is None:
+            d_area, s_area = det.iloc[0:0], seg_f.iloc[0:0]  # nada desenhado ainda
+        else:
+            d_area, s_area = dados.recorte_relatorio(
+                det, seg_f, vias, de, ate, sev, classes, so_conf, areas=areas_geo
+            )
+        fora, sem_imagem = set(salvo.get("fora", [])), set(salvo.get("sem_imagem", []))
+        tabela = dados.tabela_da_escolha(d_area, fora, sem_imagem)
+        ids = tabela["Id"].tolist()
+        st.markdown("**Defeitos da área** · desmarque o que não deve entrar, ou só a imagem dele")
+        b1, b2, b3, b4 = st.columns(4)
+        b1.button(
+            "Todos no relatório", on_click=marcar_todos, args=("entra", True, ids), width="stretch"
+        )
+        b2.button(
+            "Nenhum no relatório",
+            on_click=marcar_todos,
+            args=("entra", False, ids),
+            width="stretch",
+        )
+        b3.button(
+            "Todas as imagens", on_click=marcar_todos, args=("imagem", True, ids), width="stretch"
+        )
+        b4.button(
+            "Nenhuma imagem", on_click=marcar_todos, args=("imagem", False, ids), width="stretch"
+        )
+        editada = st.data_editor(
+            tabela,
+            key=f"rel_tab:{_chave(run.name, ids, salvo['ver'])}",
+            hide_index=True,
+            width="stretch",
+            height=min(420, 38 + 35 * max(len(tabela), 1)),
+            disabled=[c for c in tabela.columns if c not in ("No relatório", "Com imagem")],
+            column_config={
+                "No relatório": st.column_config.CheckboxColumn("No relatório", width="small"),
+                "Com imagem": st.column_config.CheckboxColumn("Com imagem", width="small"),
+                "Id": st.column_config.NumberColumn("Id", format="%d", width="small"),
+                "Área (m²)": st.column_config.NumberColumn("Área (m²)", format="%.2f"),
+            },
+        )
+        fora, sem_imagem = dados.atualizar_escolha(editada, fora, sem_imagem)
+        salvo["fora"], salvo["sem_imagem"] = sorted(fora), sorted(sem_imagem)
         det_rel = d_area[~d_area["id"].isin(fora)]
+        det_rel = geometria.agrupar_tudo(det_rel, dados.parametros())
+        imagens = {int(i) for i in det_rel["id"]} - sem_imagem
         vazio = {"extensao_m": 0.0, "area_pista_m2": 0.0}
         ext = dados.area_e_extensao(s_area) if len(s_area) else vazio
         st.caption(
-            f"Entram **{len(det_rel)}** defeito(s) em **{len(s_area)}** segmento(s): "
-            f"{fmt(ext['extensao_m'], 0)} m de via, {fmt(ext['area_pista_m2'], 0)} m² de pista."
+            f"Entram **{len(det_rel)}** defeito(s), **{len(imagens)}** com imagem, em "
+            f"**{len(s_area)}** segmento(s): {fmt(ext['extensao_m'], 0)} m de via, "
+            f"{fmt(ext['area_pista_m2'], 0)} m² de pista."
         )
     partes = []
-    if set(vias) != set(vias_todas):
-        partes.append("vias " + ", ".join(vias))
-    if segs and (de, ate) != (segs[0], segs[-1]):
-        partes.append(f"segmentos {de} a {ate}")
+    if modo == "Desenhar no mapa":
+        n = len(salvo.get("areas", []))
+        partes.append(f"área desenhada no mapa ({n} polígono{'s' if n != 1 else ''})")
+    else:
+        if set(vias) != set(vias_todas):
+            partes.append("vias " + ", ".join(vias))
+        if segs and (de, ate) != (segs[0], segs[-1]):
+            partes.append(f"segmentos {de} a {ate}")
     if set(sev) != set(SEVERIDADES):
         nomes = ", ".join(ROTULO_SEVERIDADE[s].lower() for s in sev)
         partes.append(f"severidade {nomes}" if sev else "nenhuma severidade")
@@ -385,10 +555,20 @@ def _escolha_do_relatorio(run: Path, det, seg_f):
         partes.append(f"só {nomes}" if classes else "nenhum tipo de defeito")
     if so_conf:
         partes.append("só áreas conferidas na revisão")
-    if fora:
-        partes.append(f"{len(fora)} defeito(s) retirado(s) à mão")
+    tirados = len(d_area) - len(det_rel)
+    if tirados:
+        partes.append(f"{tirados} defeito(s) retirado(s) à mão")
     escopo = "; ".join(partes) + "." if partes else None
-    return det_rel, s_area, escopo
+    return det_rel, s_area, escopo, imagens
+
+
+def _relatorio_html(*args) -> bytes:
+    """Gerado so no clique do botao de download (roda fora do script, sem st.*)."""
+    return relatorio.gerar_html(*args).encode("utf-8")
+
+
+def _relatorio_pdf(*args) -> bytes:
+    return relatorio.gerar_pdf(*args)
 
 
 # ============================================================== revisao manual
@@ -589,13 +769,15 @@ def _editor(orto: Path, limites: tuple, det_todos, editar, chave: str) -> list[d
 def _refazer_recortes(run: Path, orto: Path, ids: list[int], det_bruto, seg, params: dict) -> None:
     """Miniatura nova, com o contorno revisado, para as areas corrigidas ou adicionadas."""
     atual = revisao.aplicar(det_bruto, seg, revisao.carregar(run), params["severidade"])
+    vale = atual[atual["revisao"] != "falso_positivo"]
+    rets = geometria.retangulo_de_cada(geometria.agrupar(vale, params["agrupamento"]))
     for ident in ids:
-        linha = atual[atual["id"] == ident]
+        linha = vale[vale["id"] == ident]
         if len(linha):
             try:
                 revisao.recorte_do_defeito(
                     run, orto, ident, linha.geometry.iloc[0], params,
-                    geometria.caixas_de(linha).iloc[0],
+                    rets.loc[linha.index[0]],
                 )  # fmt: skip
             except (ValueError, OSError) as erro:  # a revisao ja esta salva; so a miniatura falhou
                 st.warning(
@@ -814,6 +996,7 @@ with st.sidebar:
         st.info("Nenhum levantamento ainda. Use **Nova análise** para processar a primeira imagem.")
 if not runs and PUBLICADO:
     st.error("Nenhum levantamento em `publicado/runs`.")
+    st.session_state["_mapa_area_antes"] = False
     st.stop()
 if not runs:
     st.markdown(
@@ -825,6 +1008,7 @@ if not runs:
         unsafe_allow_html=True,
     )
     _nova_analise()
+    st.session_state["_mapa_area_antes"] = False
     st.stop()
 
 with st.sidebar:
@@ -890,6 +1074,8 @@ with st.sidebar:
 
 params = _params()
 det = dados.filtrar(det_todos, area_min, area_max, conf_min, sev, segs, vias, classes, situacoes)
+# retangulos de reparo do que esta na tela (falso positivo filtrado nao puxa vizinho)
+det = geometria.agrupar_tudo(det, params)
 seg_f = dados.filtrar_segmentos(seg, segs, vias)  # recorte de via/segmento escolhido
 validos = dados.filtrar(det_todos, situacoes=situacoes)  # tudo, menos o que a revisao descartou
 filtrado = len(det) < len(validos)
@@ -1445,29 +1631,26 @@ if aba == "Orçamento":
 # ============================================================== dados e relatorio
 if aba == "Dados e relatório":
     st.subheader("Relatório executivo")
-    det_rel, seg_rel, escopo = _escolha_do_relatorio(run, det, seg_f)
+    det_rel, seg_rel, escopo, imagens = _escolha_do_relatorio(run, det, seg_f, resumo)
     orc_rel = _orcar(det_rel, seg_rel, cfg_orc, precos, solucoes)
-    r1, r2 = st.columns([1, 3])
-    # assinatura do que entra no relatorio: muda com a escolha, filtro, revisao ou orcamento
-    assinatura = (
-        run.name, tuple(det_rel["id"].astype(int)), tuple(seg_rel["segmento"].astype(int)),
-        round(orc_rel["total"]["total"], 2), _carimbo_rev(run),
+    # o arquivo so e montado no clique (deferido): nada de gerar e depois baixar
+    args = (run, det_rel, seg_rel, resumo, params, orc_rel, escopo, imagens)
+    r1, r2, r3 = st.columns([1, 1, 2])
+    r1.download_button(
+        "Gerar PDF", data=partial(_relatorio_pdf, *args), file_name=f"{run.name}_relatorio.pdf",
+        mime="application/pdf", on_click="ignore", type="primary", icon=":material/picture_as_pdf:",
+        disabled=seg_rel.empty, width="stretch",
     )  # fmt: skip
-    if r1.button("Gerar relatório", type="primary", width="stretch", disabled=seg_rel.empty):
-        pagina = relatorio.gerar_html(run, det_rel, seg_rel, resumo, params, orc_rel, escopo)
-        st.session_state["relatorio"] = (assinatura, pagina.encode("utf-8"))
-    pronto = st.session_state.get("relatorio")
-    if pronto and pronto[0] == assinatura:
-        r2.download_button(
-            "Baixar relatório (HTML, pronto para imprimir em PDF)",
-            pronto[1],
-            f"{run.name}_relatorio.html",
-            "text/html",
-        )
-    else:
-        r2.caption(
-            "Uma página com indicadores, mapa, condição por via, trechos prioritários, estimativa de reparo e os maiores defeitos, só da área e dos defeitos escolhidos acima."
-        )
+    r2.download_button(
+        "Gerar HTML", data=partial(_relatorio_html, *args), file_name=f"{run.name}_relatorio.html",
+        mime="text/html", on_click="ignore", icon=":material/html:", disabled=seg_rel.empty,
+        width="stretch",
+    )  # fmt: skip
+    r3.caption(
+        "Indicadores, mapa da área, condição por via, trechos prioritários, estimativa de reparo, "
+        "a lista de todos os defeitos escolhidos e as imagens marcadas. Com muitas imagens, o PDF "
+        "leva alguns segundos."
+    )
     st.subheader("Defeitos")
     tab = dados.tabela(det)
     st.dataframe(
@@ -1591,3 +1774,7 @@ with st.expander("Limites do método"):
         "As faixas de severidade são de trabalho (por área), não de norma. Os números são "
         "candidatos a defeito; confirme pelos recortes antes de usar."
     )
+
+# so uma execucao que chegou ao fim diz se o mapa de area ficou na tela: uma interrompida pela
+# seguinte (clique rapido) nao pode fazer o mapa parecer fechado e ser remontado sem o desenho
+st.session_state["_mapa_area_antes"] = st.session_state.get("_mapa_area_agora", False)

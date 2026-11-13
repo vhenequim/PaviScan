@@ -17,6 +17,8 @@ from pathlib import Path
 import geopandas as gpd
 import pandas as pd
 
+from . import geometria
+
 COLUNAS = ["id", "opcao", "servico", "unidade", "quantidade", "preco_unit", "custo"]
 PAVIMENTOS = ["CBUQ", "PMF", "TSD"]
 TERRENOS = ["bom", "regular", "ruim"]
@@ -48,6 +50,9 @@ def area_corte(defeitos: gpd.GeoDataFrame, cfg: dict) -> pd.Series:
     retangulo minimo rotacionado. Classe extensa (`corte_pela_area`): a propria area
     vezes `folga_area`, porque o retangulo de uma faixa longa e torta seria muito maior
     que o dano.
+
+    Com a coluna `grupo_corte` (`geometria.agrupar_tudo`), os buracos de um grupo sao um
+    remendo so: um retangulo na via para todos eles, mais a folga, repartido pela area.
     """
     m = float(cfg["margem_corte_m"])
     if {"caixa_ao_longo_m", "caixa_transversal_m"} <= set(defeitos.columns):
@@ -56,6 +61,16 @@ def area_corte(defeitos: gpd.GeoDataFrame, cfg: dict) -> pd.Series:
         a, b = defeitos["largura_m"], defeitos["comprimento_m"]
     ret = (a + 2 * m) * (b + 2 * m)
     pela_area = defeitos["classe"].isin(cfg.get("corte_pela_area", []))
+    buracos = defeitos[~pela_area]
+    if "grupo_corte" in defeitos.columns and len(buracos) and buracos["grupo_corte"].notna().all():
+        buracos = buracos.assign(grupo=buracos["grupo_corte"].astype(int))
+        rets = geometria.retangulos(buracos).set_index("grupo")
+        corte_grupo = (rets["ao_longo_m"] + 2 * m) * (rets["transversal_m"] + 2 * m)
+        soma = buracos.groupby("grupo")["area_m2"].transform("sum")
+        n = buracos.groupby("grupo")["area_m2"].transform("size")
+        peso = (buracos["area_m2"] / soma).where(soma > 0, 1.0 / n)
+        ret = ret.astype(float).copy()
+        ret.loc[buracos.index] = (peso * buracos["grupo"].map(corte_grupo)).to_numpy()
     return ret.where(~pela_area, defeitos["area_m2"] * float(cfg["folga_area"]))
 
 

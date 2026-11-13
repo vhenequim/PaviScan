@@ -21,6 +21,7 @@ dependencies = [
     "pandas",
     "pyyaml",
     "openpyxl",
+    "fpdf2>=2.8",
     "streamlit>=1.50",
     "plotly",
     "pydeck",

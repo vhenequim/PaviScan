@@ -244,6 +244,162 @@ def caixas_de(defeitos: gpd.GeoDataFrame) -> gpd.GeoSeries:
     return gpd.GeoSeries(rets, index=defeitos.index, crs=defeitos.crs)
 
 
+ORDEM_SEVERIDADE = {"baixa": 0, "media": 1, "alta": 2}
+
+
+def agrupar(
+    defeitos: gpd.GeoDataFrame, cfg: dict, coluna: str = "grupo", fora=()
+) -> gpd.GeoDataFrame:
+    """Junta num retangulo so os defeitos que viram um remendo so: coluna `grupo`.
+
+    `fora`: classes que nao entram neste agrupamento (ficam sem numero em `coluna`).
+
+    Regras (bloco `agrupamento` do params.yaml):
+    - retangulos que se tocam ou ficam a ate `distancia_juntar_m` se juntam;
+    - defeito pequeno (menor lado do retangulo abaixo de `lado_min_m`, a dimensao minima
+      de panela do manual LTPP) se junta ao vizinho a ate `distancia_pequeno_m` (a FHWA
+      combina reparos a menos de 300 mm);
+    - o retangulo do grupo e refeito e, se encostar em outro, os dois se juntam, ate parar.
+    O retangulo do grupo segue a direcao da via do maior defeito dele (num cruzamento, a
+    da via em que esta o maior).
+    `grupo` vai de 1 em diante, na ordem do menor id de cada grupo.
+    """
+    d = defeitos.copy()
+    if len(fora) and "classe" in d.columns and d["classe"].isin(list(fora)).any():
+        dentro = ~d["classe"].isin(list(fora))
+        d[coluna] = agrupar(d[dentro], cfg)["grupo"].reindex(d.index)
+        return d
+    n = len(d)
+    if n == 0:
+        d[coluna] = pd.Series(dtype="int64")
+        return d
+    ang = d["angulo_via"] if "angulo_via" in d.columns else pd.Series(0.0, index=d.index)
+    ang = ang.fillna(0.0).astype(float).to_numpy()
+    rets, ao_longo, transversal = caixas(d.geometry.values, ang)
+    pequeno = np.minimum(ao_longo, transversal) < float(cfg["lado_min_m"])
+    juntar, junto_pequeno = float(cfg["distancia_juntar_m"]), float(cfg["distancia_pequeno_m"])
+    pai = list(range(n))
+
+    def raiz(i: int) -> int:
+        while pai[i] != i:
+            pai[i] = pai[pai[i]]
+            i = pai[i]
+        return i
+
+    def unir(i: int, j: int) -> bool:
+        a, b = raiz(i), raiz(j)
+        if a == b:
+            return False
+        pai[max(a, b)] = min(a, b)
+        return True
+
+    validos = np.array([r is not None and not r.is_empty for r in rets])
+    arvore = STRtree(rets[validos])
+    idx_validos = np.flatnonzero(validos)
+    alcance = max(juntar, junto_pequeno)
+    for i in idx_validos:
+        for k in arvore.query(rets[i], predicate="dwithin", distance=alcance + 1e-9):
+            j = int(idx_validos[k])
+            if j <= i:
+                continue
+            limite = junto_pequeno if (pequeno[i] or pequeno[j]) else juntar
+            if rets[i].distance(rets[j]) <= limite + 1e-9:
+                unir(i, int(j))
+    area = d.geometry.area.to_numpy()
+    while True:  # o retangulo do grupo cresce e pode encostar em outro
+        rotulo = np.array([raiz(i) for i in range(n)])
+        chefes = sorted(set(rotulo[validos]))
+        geoms, angs = [], []
+        for c in chefes:
+            membros = np.flatnonzero(rotulo == c)
+            geoms.append(unary_union(list(d.geometry.values[membros])))
+            angs.append(ang[membros[np.argmax(area[membros])]])
+        rg, _, _ = caixas(np.array(geoms, dtype=object), np.array(angs))
+        arv = STRtree(rg)
+        mudou = False
+        for a_, r in enumerate(rg):
+            for b_ in arv.query(r, predicate="intersects"):
+                if b_ > a_:
+                    mudou |= unir(chefes[a_], chefes[int(b_)])
+        if not mudou:
+            break
+    rotulo = np.array([raiz(i) for i in range(n)])
+    ids = np.arange(1, n + 1)
+    if "id" in d.columns:  # id faltando (nao acontece no pipeline) fica depois dos outros
+        ids = pd.to_numeric(d["id"], errors="coerce").fillna(10**9).astype(int).to_numpy()
+    menor_id = pd.Series(ids).groupby(rotulo).transform("min").to_numpy()
+    ordem = {m: k + 1 for k, m in enumerate(sorted(set(menor_id)))}
+    d[coluna] = [ordem[m] for m in menor_id]
+    return d
+
+
+def agrupar_tudo(defeitos: gpd.GeoDataFrame, params: dict) -> gpd.GeoDataFrame:
+    """`grupo`: todo retangulo que encosta se junta (o que o mapa e o relatorio mostram).
+    `grupo_corte`: o mesmo, so entre as classes cortadas por retangulo, para o orcamento;
+    a classe orcada pela area (`orcamento.corte_pela_area`) nao junta buracos e nao e
+    paga duas vezes."""
+    d = agrupar(defeitos, params["agrupamento"])
+    fora = params["orcamento"].get("corte_pela_area", [])
+    return agrupar(d, params["agrupamento"], "grupo_corte", fora)
+
+
+def retangulos(defeitos: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
+    """Um retangulo paralelo a via por grupo (coluna `grupo`; sem ela, um por defeito).
+
+    Colunas: grupo, ids, n, area_m2 (soma), severidade (a maior), ao_longo_m,
+    transversal_m, angulo_via e o retangulo como geometria. A direcao e a do maior defeito.
+    """
+    colunas = ["grupo", "ids", "n", "area_m2", "severidade", "ao_longo_m", "transversal_m",
+               "angulo_via"]  # fmt: skip
+    if defeitos.empty:
+        return gpd.GeoDataFrame({c: [] for c in colunas}, geometry=[], crs=defeitos.crs)
+    d = defeitos[defeitos.geometry.notna() & ~defeitos.geometry.is_empty].copy()
+    if d.empty:
+        return gpd.GeoDataFrame({c: [] for c in colunas}, geometry=[], crs=defeitos.crs)
+    if "grupo" not in d.columns:
+        d["grupo"] = d["id"] if "id" in d.columns else range(1, len(d) + 1)
+    d = d[d["grupo"].notna()]
+    if "angulo_via" not in d.columns:
+        d["angulo_via"] = 0.0
+    d["_area"] = d.geometry.area
+    linhas, geoms, angs = [], [], []
+    for grupo, g in d.groupby("grupo", sort=True):
+        maior = g.loc[g["_area"].idxmax()]
+        sev = (
+            max(g["severidade"], key=lambda s: ORDEM_SEVERIDADE.get(s, 0))
+            if "severidade" in g
+            else "baixa"
+        )
+        ids = [int(i) for i in g["id"]] if "id" in g.columns else []
+        area = g["area_m2"] if "area_m2" in g.columns else g["_area"]
+        linhas.append(
+            {
+                "grupo": int(grupo),
+                "ids": ids,
+                "n": len(g),
+                "area_m2": round(float(area.sum()), 4),
+                "severidade": sev,
+                "id_maior": int(maior["id"]) if "id" in g.columns else 0,
+            }
+        )
+        geoms.append(unary_union(list(g.geometry)))
+        angs.append(float(maior["angulo_via"]) if pd.notna(maior["angulo_via"]) else 0.0)
+    rets, ao_longo, transversal = caixas(np.array(geoms, dtype=object), np.array(angs))
+    saida = gpd.GeoDataFrame(linhas, geometry=list(rets), crs=d.crs)
+    saida["ao_longo_m"] = np.round(ao_longo, 3)
+    saida["transversal_m"] = np.round(transversal, 3)
+    saida["angulo_via"] = np.round(angs, 2)
+    return saida
+
+
+def retangulo_de_cada(defeitos: gpd.GeoDataFrame) -> gpd.GeoSeries:
+    """Para cada defeito, o retangulo do grupo dele (sem `grupo`, o proprio retangulo)."""
+    if "grupo" not in defeitos.columns:
+        return caixas_de(defeitos)
+    rets = retangulos(defeitos).set_index("grupo").geometry
+    return gpd.GeoSeries(defeitos["grupo"].map(rets).values, index=defeitos.index, crs=defeitos.crs)
+
+
 def medir(
     itens: list[Item], crs, gsd_m: float, faixas: dict, contorno: dict | None = None
 ) -> gpd.GeoDataFrame:

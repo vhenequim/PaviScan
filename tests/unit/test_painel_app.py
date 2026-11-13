@@ -10,7 +10,16 @@ import pytest
 from shapely.geometry import LineString
 
 import paviscan
-from paviscan import acervo, orcamento, pipeline, pista_osm, relatorio, revisao, sintetico
+from paviscan import (
+    acervo,
+    geometria,
+    orcamento,
+    pipeline,
+    pista_osm,
+    relatorio,
+    revisao,
+    sintetico,
+)
 from paviscan import config as config_mod
 from paviscan.deteccao import criar
 from paviscan.painel import dados
@@ -306,12 +315,14 @@ def test_relatorio_sai_so_com_a_area_e_os_defeitos_escolhidos(dois_runs):
     at.run()
     assert not at.exception, at.exception
     assert any("Entram" in c.value for c in at.caption)
-    sev = next(m for m in at.multiselect if m.label == "Severidade")
-    sev.set_value(["alta"]).run()
-    next(b for b in at.button if b.label == "Gerar relatório").click().run()
+    next(b for b in at.button if b.label == "Nenhuma imagem").click().run()
     assert not at.exception, at.exception
-    assinatura, html_rel = at.session_state["relatorio"]
-    assert "severidade alta" in html_rel.decode("utf-8")
+    assert any("**0** com imagem" in c.value for c in at.caption)
+    # o PDF sai direto, com todos os defeitos escolhidos e so as imagens marcadas
+    pdf = relatorio.gerar_pdf(run, d, s, resumo, params, None, "teste", {int(d["id"].iloc[0])})
+    assert pdf[:5] == b"%PDF-" and len(pdf) > 10_000
+    sem = relatorio.gerar_html(run, d, s, resumo, params, None, None, set())
+    assert "<figure>" not in sem and f"Defeitos ({len(d)})" in sem
 
 
 def test_mapa_do_relatorio_aceita_segmento_com_sobra_de_linha(dois_runs):
@@ -339,21 +350,14 @@ def test_menu_do_relatorio_lembra_a_escolha_ao_trocar_de_secao(dois_runs):
     at.session_state["aba"] = "Dados e relatório"
     at.run()
     next(m for m in at.multiselect if m.label == "Severidade").set_value(["alta"]).run()
-    fora = next(m for m in at.multiselect if m.label == "Tirar defeitos específicos")
-    um = fora.options[0] if fora.options else None
-    if um is not None:
-        fora.set_value([fora.options[0]]).run()
+    next(b for b in at.button if b.label == "Nenhum no relatório").click().run()
     at.session_state["aba"] = "Orçamento"
     at.run()
     at.session_state["aba"] = "Dados e relatório"
     at.run()
     assert not at.exception, at.exception
     assert next(m for m in at.multiselect if m.label == "Severidade").value == ["alta"]
-    if um is not None:
-        assert (
-            len(next(m for m in at.multiselect if m.label == "Tirar defeitos específicos").value)
-            == 1
-        )
+    assert any("Entram **0** defeito" in c.value for c in at.caption)  # os tirados continuam
 
 
 def test_menu_do_relatorio_volta_a_area_inteira_ao_escolher_todas_as_vias(tmp_path):
@@ -413,6 +417,54 @@ def test_versao_publicada_abre_so_com_o_pacote_e_sem_editar(dois_runs, tmp_path,
     assert marcas and all(b.disabled for b in marcas)  # revisao so para consulta
     at.session_state["aba"] = "Dados e relatório"
     at.run()
-    next(b for b in at.button if b.label == "Gerar relatório").click().run()
     assert not at.exception, at.exception
-    assert "Onde estão os defeitos" in at.session_state["relatorio"][1].decode("utf-8")
+    assert any("Entram" in c.value for c in at.caption)  # menu e botoes de PDF e HTML abrem
+
+
+def test_relatorio_pela_area_desenhada_no_mapa(dois_runs):
+    """Defeito que toca a area desenhada entra inteiro; sem desenho, nada entra."""
+    run = dois_runs / "beta"
+    det, seg, _ = dados.carregar(run)
+    at = _app(dois_runs).run()
+    at.session_state["levantamento_pendente"] = "beta"
+    at.session_state["aba"] = "Dados e relatório"
+    at.session_state["rel_salvo:beta"] = {"modo": "Desenhar no mapa", "ver": 0}
+    at.run()
+    assert not at.exception, at.exception
+    assert any("Entram **0** defeito" in c.value for c in at.caption)
+    # um quadradinho em volta de um vertice do maior defeito: so esse vertice fica dentro
+    maior = det.sort_values("area_m2").geometry.iloc[-1]
+    vx, vy = list(geometria.poligonos(maior)[0].exterior.coords)[0]
+    from shapely.geometry import box, mapping
+
+    canto = gpd.GeoSeries([box(vx - 0.05, vy - 0.05, vx + 0.05, vy + 0.05)], crs=det.crs).to_crs(
+        4326
+    )
+    at.session_state["rel_salvo:beta"] = {"modo": "Desenhar no mapa", "ver": 0,
+                                          "areas": [mapping(canto.iloc[0])]}  # fmt: skip
+    at.run()
+    assert not at.exception, at.exception
+    assert any("Entram **1** defeito" in c.value for c in at.caption)
+
+
+def test_area_desenhada_que_se_cruza_nao_derruba_a_aba(dois_runs):
+    from shapely.geometry import box, mapping
+
+    run = dois_runs / "beta"
+    det, seg, _ = dados.carregar(run)
+    x0, y0, x1, y1 = seg.total_bounds
+    laco = {"type": "Polygon", "coordinates": [[(x0, y0), (x1, y1), (x1, y0), (x0, y1), (x0, y0)]]}
+    from shapely.geometry import shape as shape_de
+
+    laco = gpd.GeoSeries([shape_de(laco)], crs=seg.crs).to_crs(4326).iloc[0]  # gravata: se cruza
+    outra = gpd.GeoSeries([box(x0, y0, x0 + 2, y0 + 2)], crs=seg.crs).to_crs(4326).iloc[0]
+    at = _app(dois_runs).run()
+    at.session_state["levantamento_pendente"] = "beta"
+    at.session_state["aba"] = "Dados e relatório"
+    at.session_state["rel_salvo:beta"] = {
+        "modo": "Desenhar no mapa", "ver": 0,
+        "areas": [mapping(laco), mapping(outra)],
+    }  # fmt: skip
+    at.run()
+    assert not at.exception, at.exception
+    assert any(b.label == "Limpar as áreas desenhadas" for b in at.button)

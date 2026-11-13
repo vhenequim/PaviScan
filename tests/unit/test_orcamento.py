@@ -211,3 +211,20 @@ def test_buraco_corta_pela_caixa_paralela_a_via(cfg):
     sem = orcamento.area_corte(det.drop(columns=["caixa_ao_longo_m", "caixa_transversal_m"]), cfg)
     # tabela antiga, sem as colunas da caixa: retangulo minimo
     assert abs(sem.iloc[0] - (1.0 + 2 * m) * (0.5 + 2 * m)) < 1e-9
+
+
+def test_buracos_do_mesmo_grupo_sao_um_corte_so(cfg):
+    from shapely.geometry import box
+
+    det = _defeitos([(1, 0.5, 0.5, "panela", "media", 0), (2, 0.5, 0.5, "panela", "media", 0)])
+    det = det.set_geometry([box(0, 0, 0.5, 0.5), box(0.5, 0, 1.0, 0.5)])
+    det["area_m2"], det["angulo_via"] = 0.25, 0.0
+    det["caixa_ao_longo_m"], det["caixa_transversal_m"] = 0.5, 0.5
+    m = cfg["margem_corte_m"]
+    separado = orcamento.area_corte(det, cfg).sum()
+    det["grupo_corte"] = 1
+    junto = orcamento.area_corte(det, cfg)
+    assert abs(junto.sum() - (1.0 + 2 * m) * (0.5 + 2 * m)) < 1e-9  # um retangulo 1,0 x 0,5 + folga
+    assert (
+        junto.sum() < separado and abs(junto.iloc[0] - junto.iloc[1]) < 1e-9
+    )  # repartido pela area

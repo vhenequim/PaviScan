@@ -115,3 +115,36 @@ def test_previa_em_webp_vale_antes_do_png_e_vai_sem_recomprimir(tmp_path):
 
     url = dados.previa_data_url(tmp_path)
     assert base64.b64decode(url.split(",", 1)[1]) == (tmp_path / "previa.webp").read_bytes()
+
+
+def test_area_desenhada_pega_o_defeito_inteiro_e_a_tabela_guarda_a_escolha():
+    det, seg = _dados()
+    det["classe"] = "panela"
+    area = box(0.8, 0.8, 1.5, 1.5)  # pega so o canto do defeito 1 (0..1 x 0..1)
+    d, s = dados.recorte_relatorio(det, seg, areas=area)
+    assert list(d["id"]) == [1] and list(s["segmento"]) == [0]
+    assert d.geometry.iloc[0].equals(det.geometry.iloc[0])  # inteiro, nao recortado
+    tab = dados.tabela_da_escolha(det, fora={2}, sem_imagem={3})
+    assert tab["No relatório"].tolist() == [True, False, True] and tab["Com imagem"].tolist() == [
+        True,
+        True,
+        False,
+    ]
+    tab.loc[tab["Id"] == 1, "Com imagem"] = False
+    fora, sem = dados.atualizar_escolha(tab[tab["Id"] != 3], {2, 9}, {3})
+    assert fora == {2, 9} and sem == {1, 3}  # 9 e 3 nao estavam na tabela: guardam a marca
+    vazia = dados.tabela_da_escolha(det.iloc[0:0], set(), set())
+    assert vazia["No relatório"].dtype == bool
+
+
+def test_para_mapa_aceita_segmento_com_sobra_de_linha():
+    """Segmento GeometryCollection (poligono + linha) quebrava o mapa de desenho do folium."""
+    from shapely.geometry import GeometryCollection, LineString
+
+    _, seg = _dados()
+    seg = seg.copy()
+    g = seg.geometry.iloc[0]
+    seg.loc[seg.index[0], "geometry"] = GeometryCollection([g, LineString([(0, 0), (-1, 0)])])
+    fc = dados.para_mapa(seg, ["segmento"])
+    tipos = {f["geometry"]["type"] for f in fc["features"]}
+    assert "GeometryCollection" not in tipos and len(fc["features"]) == 2

@@ -189,6 +189,51 @@ O Uiramutã processa em cerca de 2 min; a geração da pista automática leva ma
 - O `.gitignore` ignorava qualquer pasta `runs/`, inclusive `publicado/runs`. Agora só ignora a da raiz.
 - Falta: criar o repositório privado, enviar o pacote e o deploy em share.streamlit.io, que é do usuário (login com GitHub, entrada `streamlit_app.py`, Python 3.12, convites por e-mail).
 
+## Remendos agrupados e relatório pelo mapa, com PDF (13/11, tarde)
+
+- O usuário pediu:
+  - juntar num retângulo só os defeitos cujos polígonos ou retângulos se tocam;
+  - juntar os buracos muito pequenos aos vizinhos, com distância e área pesquisadas;
+  - no relatório: filtrar desenhando no mapa, listar todos os defeitos da área, poder desmarcar defeitos ou imagens, e um botão de PDF direto.
+- Pesquisa:
+  - o manual LTPP da FHWA (FHWA-RD-03-031) dá 150 mm como dimensão mínima de panela;
+  - a FHWA combina reparos a menos de 300 mm, mas em pavimento de concreto;
+  - especificação de conservação que cita os manuais do DNIT (Novacap) pede o máximo de defeitos próximos num remendo só;
+  - não achei número específico para asfalto.
+- `geometria.agrupar` aplica as regras, e a coluna `grupo` vai para o `defeitos.geojson`. Nos levantamentos, os retângulos caíram:
+
+  | Levantamento | Antes | Depois |
+  |---|---|---|
+  | Tarumã | 618 | 506 |
+  | Novo Aleixo | 526 | 431 |
+  | Querari | 260 | 181 |
+  | Uiramutã | 917 | 640 |
+
+- Quase nenhum defeito tem menor lado abaixo de 15 cm (2 ou 3 por levantamento), porque o detector já descarta o que é muito pequeno. A regra do pequeno quase não age; o que junta é o toque.
+- O orçamento corta um retângulo por grupo de buracos, repartido pela área.
+- A primeira versão juntava também o revestimento perdido. Com isso, buracos que não se tocavam viravam um corte só, atravessando a faixa sem capa, que ainda era paga pela área: corte maior e área cobrada duas vezes. No Novo Aleixo, um grupo foi de 11 para 33 m² de corte. A revisão independente achou.
+- Agora há dois agrupamentos (`geometria.agrupar_tudo`): `grupo`, com tudo que encosta (é o que o mapa e o relatório mostram), e `grupo_corte`, só entre buracos (é o que o orçamento usa). Plano recomendado:
+
+  | Levantamento | Antes do agrupamento | Agora | Variação |
+  |---|---|---|---|
+  | Tarumã | 174.695 | 173.824 | −0,5 % |
+  | Novo Aleixo | 99.026 | 97.676 | −1,4 % |
+  | Uiramutã | 336.524 | 316.500 | −6 % |
+  | Querari | 76.398 | 76.398 | igual (é quase todo revestimento perdido) |
+- O painel agrupa o que está na tela, depois dos filtros: falso positivo filtrado não puxa vizinho para o remendo.
+- Relatório:
+  - modo "Desenhar no mapa": folium com a ortofoto, os segmentos e os retângulos; o defeito que toca a área entra inteiro;
+  - tabela com "No relatório" e "Com imagem";
+  - lista e imagens de todos os defeitos escolhidos;
+  - miniatura gerada na hora para quem não tinha;
+  - "Gerar PDF" e "Gerar HTML" montam o arquivo no clique (download deferido do Streamlit).
+- A revisão independente também achou três defeitos no modo "Desenhar no mapa". Todos corrigidos com teste ou conferidos no navegador:
+  - Quebrava no Novo Aleixo, por causa do segmento GeometryCollection. Agora `para_mapa` passa só os polígonos.
+  - Uma interação em cada duas seguidas se perdia: o st_folium recria o componente quando o JS do mapa muda. Agora o mapa abre com as áreas de quando entrou na tela e só é remontado se saiu da tela ou se mudou o resto do que ele mostra. No navegador, dois retângulos desenhados com 1 s de intervalo entraram os dois.
+  - Polígono que se cruza derrubava a aba. Agora passa por `make_valid` antes de unir.
+- PDF desenhado direto com `fpdf2` (Python puro, entrou no `pyproject.toml`). Não usa conversor de HTML, porque a máquina não tem Pango nem Chrome, e no Streamlit Cloud precisaria de pacote de sistema.
+- A versão publicada precisa ser regerada (`scripts/publicar.py`) para levar o código novo e o `fpdf2` no `requirements.txt`.
+
 ## Decisões
 - 10/11: escopo reduzido a um retrato de uma imagem. Orçamento e série temporal saíram.
 - 10/11: detector por anomalia escura local com limiar robusto (mediana + k x MAD), não Otsu nem watershed puro. YOLO do mestrado entra depois pela interface `Detector`.

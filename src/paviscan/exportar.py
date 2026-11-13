@@ -106,7 +106,7 @@ def recortes(ds, defeitos: gpd.GeoDataFrame, saida: Path, cfg: dict, escala: flo
     if defeitos.empty:
         return 0
     escolhidos = defeitos.sort_values("area_m2", ascending=False).head(int(cfg["maximo"]))
-    rets = geometria.caixas_de(escolhidos)
+    rets = geometria.retangulo_de_cada(defeitos).loc[escolhidos.index]  # o retangulo do grupo
     for ident, geom, caixa in zip(escolhidos["id"], escolhidos.geometry, rets, strict=True):
         recorte(ds, geom, pasta / f"{int(ident)}.jpg", cfg, escala, caixa)
     return len(escolhidos)
