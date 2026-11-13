@@ -3,7 +3,9 @@
 Sem streamlit: so monta texto (HTML e CSS). Os arquivos de imagem ficam nesta pasta:
   exercito.png  simbolo do Exercito Brasileiro
   gpte2.svg     distintivo do 2o Gpt E, redesenhado em vetor a partir de uma imagem pequena
-  onca.svg      silhueta usada no indicador de carregamento. Opcional: sem o arquivo, fica so o anel
+  onca.svg      onca desenhada pelo usuario, em silhueta: simbolo do programa e indicador de
+                carregamento. Sem o arquivo, o carregamento mostra so o anel
+  icone.png     a mesma onca em quadrado verde-oliva: icone da aba do navegador
 
 As cores de fundo e de texto de cada tema estao em `.streamlit/config.toml`; aqui ficam as dos
 elementos proprios do painel. `light-dark()` escolhe a cor pelo tema ativo sem depender do Python.
@@ -53,10 +55,45 @@ def faixa(titulo: str, detalhe_html: str = "") -> str:
     )
 
 
+def icone() -> str:
+    """Icone da aba do navegador: o arquivo do simbolo ou, sem ele, um emoji."""
+    arq = PASTA / "icone.png"
+    return str(arq) if arq.is_file() else "🛣️"
+
+
+def titulo_app() -> str:
+    """Nome do programa com a onca ao lado, para o alto da barra lateral."""
+    onca = "<span class='marca-onca'></span>" if data_url("onca.svg") else ""
+    return f"<div class='marca-app'>{onca}<span>PaviScan</span></div>"
+
+
+def _css_onca() -> str:
+    """Regras que dependem do arquivo da onca. Sem ele, fica o anel e a rodinha padrao."""
+    onca = data_url("onca.svg")
+    if not onca:
+        return ""
+    return f"""
+  [data-testid="stApp"] {{--onca-img: url("{onca}");}}
+  [data-testid="stApp"]::after {{
+    background: var(--onca); -webkit-mask: var(--onca-img) center / 66% no-repeat;
+    mask: var(--onca-img) center / 66% no-repeat;
+  }}
+  /* a mesma onca no lugar da rodinha dos avisos "Preparando..." */
+  [data-testid="stSpinner"] i, [data-testid="stSpinnerIcon"] {{
+    width: 2rem !important; height: 2rem !important; border: 0 !important;
+    border-radius: 0 !important; background: var(--onca) !important;
+    -webkit-mask: var(--onca-img) center / contain no-repeat;
+    mask: var(--onca-img) center / contain no-repeat;
+    animation: onca-respira 1.2s ease-in-out infinite !important;
+  }}
+  .marca-onca {{width: 60px; height: 60px; flex: none; background: var(--onca);
+                -webkit-mask: var(--onca-img) center / contain no-repeat;
+                mask: var(--onca-img) center / contain no-repeat;}}
+"""
+
+
 def css() -> str:
     """Bloco <style> do painel: cores dos dois temas, faixa de titulo e onca de carregamento."""
-    onca = data_url("onca.svg")
-    mascara = f'url("{onca}") center / 66% no-repeat' if onca else "none"
     return f"""
 <style>
   [data-testid="stApp"] {{
@@ -89,6 +126,8 @@ def css() -> str:
   .cartao {{background: var(--cartao); border-radius: 12px; padding: 12px 14px; height: 100%;}}
   .cartao small {{color: var(--texto-fraco);}}
   .passo {{font-weight: 700; color: var(--oliva); font-size: 1.05rem; margin: 6px 0 2px;}}
+  .marca-app {{display: flex; align-items: center; gap: 10px; font-size: 1.7rem;
+               font-weight: 700; line-height: 1.1; margin-bottom: 2px;}}
 
   /* carregando: a onca parada dentro de um anel que gira, no canto de baixo da tela */
   @keyframes onca-gira {{to {{transform: rotate(360deg);}}}}
@@ -102,9 +141,6 @@ def css() -> str:
     background: var(--selo-fundo); border: 5px solid var(--selo-anel);
     border-top-color: var(--oliva); box-shadow: 0 6px 18px rgba(0, 0, 0, .28);
   }}
-  [data-testid="stApp"]::after {{
-    background: var(--onca); -webkit-mask: {mascara}; mask: {mascara};
-  }}
   /* so aparece se o trabalho passar de meio segundo: clique rapido nao pisca */
   [data-testid="stApp"][data-test-script-state="running"]::before {{
     animation: onca-surge .2s ease .5s forwards, onca-gira .9s linear infinite;
@@ -113,12 +149,5 @@ def css() -> str:
     animation: onca-surge .2s ease .5s forwards, onca-respira 1.8s ease-in-out infinite;
   }}
   [data-testid="stStatusWidget"] {{visibility: hidden;}}
-  /* a mesma onca no lugar da rodinha dos avisos "Preparando..." */
-  [data-testid="stSpinner"] i, [data-testid="stSpinnerIcon"] {{
-    width: 2rem !important; height: 2rem !important; border: 0 !important;
-    border-radius: 0 !important; background: var(--onca) !important;
-    -webkit-mask: {mascara.replace("66%", "contain")}; mask: {mascara.replace("66%", "contain")};
-    animation: onca-respira 1.2s ease-in-out infinite !important;
-  }}
-</style>
+{_css_onca()}</style>
 """

@@ -149,7 +149,8 @@ O Uiramutã processa em cerca de 2 min; a geração da pista automática leva ma
 - O distintivo do 2º Gpt E foi redesenhado em SVG a partir de um JPEG de 447 px: escudo, faixas e anel por medida na imagem, letras em Rockwell Bold convertidas em contorno, castelo desenhado por geometria. Não é a arte oficial.
 - Temas: `[theme.light]` e `[theme.dark]` em `.streamlit/config.toml`; a troca é no menu ⋮. As cores dos elementos próprios usam `light-dark()` do CSS, porque o Streamlit põe `color-scheme` no `stApp` e não roda o script de novo ao trocar o tema.
 - Carregamento: pseudo-elementos do `stApp` ligados a `data-test-script-state="running"`, com atraso de 0,5 s para clique rápido não piscar. Depende de nomes internos do Streamlit 1.67; se uma versão nova mudar os nomes, o indicador some sem quebrar nada.
-- A onça veio de uma prévia do Dreamstime com marca d'água. O arquivo `marca/onca.svg` está no `.gitignore` até o usuário confirmar a licença ou trocar a imagem.
+- A primeira onça era uma prévia de banco de imagens com marca d'água e ficou fora do git. No mesmo dia o usuário mandou uma onça autoral: `marca/onca.svg` foi refeito a partir dela, entrou no git e virou também o símbolo do programa (ao lado do nome na barra lateral e ícone da aba, `marca/icone.png`).
+- Correção: sem o arquivo da onça, a versão anterior desenhava um disco cheio por cima do anel, e não "só o anel" como eu tinha escrito. As regras da onça agora só entram no CSS quando o arquivo existe; há teste para isso.
 
 ## Decisões
 - 10/11: escopo reduzido a um retrato de uma imagem. Orçamento e série temporal saíram.

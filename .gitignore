@@ -9,6 +9,3 @@ dados/*
 *.tif
 .env
 .claude/settings.local.json
-# silhueta da onca do indicador de carregamento: imagem de banco com licenca a confirmar.
-# Sem o arquivo o painel funciona e mostra so o anel.
-src/paviscan/marca/onca.svg

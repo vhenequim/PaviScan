@@ -35,7 +35,7 @@ ABAS = [
     "Nova análise", "Próximos passos",
 ]  # fmt: skip
 
-st.set_page_config(page_title="PaviScan", page_icon="🛣️", layout="wide")
+st.set_page_config(page_title="PaviScan", page_icon=marca.icone(), layout="wide")
 st.markdown(marca.css(), unsafe_allow_html=True)
 
 
@@ -592,7 +592,7 @@ def _nova_analise() -> None:
 
 # ============================================================== barra lateral
 with st.sidebar:
-    st.markdown("## 🛣️ PaviScan")
+    st.markdown(marca.titulo_app(), unsafe_allow_html=True)
     st.caption("Condição do pavimento a partir de ortofoto de drone")
     runs = dados.listar_runs(RUNS)
     if not runs:
