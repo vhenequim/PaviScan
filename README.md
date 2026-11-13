@@ -77,6 +77,27 @@ Na aba **Inspeção** há três modos:
 
 Falso positivo sai dos indicadores, do orçamento e do relatório (há uma chave na barra lateral para incluí-los de volta). A revisão fica em `runs/<nome>/revisao.json` e nunca altera o que o detector gravou: dá para desfazer, e o par detecção + revisão serve de rótulo para treinar um modelo depois. Reprocessar a mesma imagem renumera os defeitos, mas a revisão vai junto: cada marcação passa para o defeito novo que mais se sobrepõe ao antigo (pelo menos 50 % de sobreposição, `revisao.reancorar_iou_min`). O que não achar par sai das contas e fica guardado em `sem_par` no `revisao.json`. Se a imagem for outra, a revisão antiga é guardada como `revisao_<data>.json` e a nova começa vazia.
 
+## Versão publicada (Streamlit Community Cloud)
+
+Uma cópia do painel na internet, só para consulta, com os levantamentos já processados. Não processa imagem nova, não abre o editor de contorno e a revisão fica só para ver. Lá a marcação se perderia quando o app reiniciasse e valeria para todos que abrem o link.
+
+As prévias e miniaturas mostram as áreas levantadas, inclusive de unidades militares. Por isso a versão publicada mora num repositório **privado**, separado deste, que é público. O app sai privado, e só abre quem for convidado por e-mail. O Community Cloud permite um app privado por conta.
+
+1. Monte o pacote no clone do repositório privado. Ele copia o código do último commit e os levantamentos de `runs/`, com a prévia em WebP e sem a ortofoto:
+
+   ```bash
+   python scripts/publicar.py ../PaviScan-publicado
+   ```
+
+2. No clone, `git add -A`, `git commit` e `git push`.
+3. Em share.streamlit.io, entre com o GitHub e crie o app:
+   - repositório privado, ramo `main`;
+   - arquivo de entrada `streamlit_app.py`;
+   - em *Advanced settings*, Python 3.12.
+4. Em *Share*, convide os e-mails de quem pode ver.
+
+Para atualizar, repita os passos 1 e 2: o app se atualiza sozinho a cada push.
+
 ## Usar pela linha de comando
 
 | Comando | O que faz |

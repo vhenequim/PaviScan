@@ -381,3 +381,38 @@ def test_menu_do_relatorio_volta_a_area_inteira_ao_escolher_todas_as_vias(tmp_pa
     faixa = next(s for s in at.select_slider if s.label.startswith("Segmentos"))
     assert tuple(faixa.value) == (0, n_seg - 1)
     assert any(f"em **{n_seg}** segmento" in c.value for c in at.caption)
+
+
+def test_versao_publicada_abre_so_com_o_pacote_e_sem_editar(dois_runs, tmp_path, monkeypatch):
+    """Pacote de scripts/publicar.py: previa em WebP, sem ortofoto; painel so para consulta."""
+    import importlib.util
+
+    arq = Path(paviscan.__file__).resolve().parents[2] / "scripts" / "publicar.py"
+    spec = importlib.util.spec_from_file_location("publicar", arq)
+    publicar = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(publicar)
+    pacote = tmp_path / "publicado" / "runs"
+    publicar._levantamento(dois_runs / "alfa", pacote / "alfa")
+    assert (pacote / "alfa" / "previa.webp").is_file()
+    assert not (pacote / "alfa" / "previa.png").exists()
+    assert "ortofoto_caminho" not in json.loads((pacote / "alfa" / "resumo.json").read_text())
+    assert dados.arquivo_previa(pacote / "alfa").suffix == ".webp"
+    assert dados.previa_data_url(pacote / "alfa").startswith("data:image/webp;base64,")
+    publicar._dependencias(tmp_path)
+    assert "rasterio" in (tmp_path / "requirements.txt").read_text()
+
+    monkeypatch.setenv("PAVISCAN_PUBLICADO", "1")
+    at = _app(pacote).run()
+    assert not at.exception, at.exception
+    assert "Nova análise" not in at.get("button_group")[0].options and len(at.metric) >= 5
+    at.session_state["aba"] = "Inspeção"
+    at.run()
+    assert not at.exception, at.exception
+    assert not [r for r in at.radio if "Corrigir contorno" in r.options]  # sem editor
+    marcas = [b for b in at.button if b.label in ("✓", "✗")]
+    assert marcas and all(b.disabled for b in marcas)  # revisao so para consulta
+    at.session_state["aba"] = "Dados e relatório"
+    at.run()
+    next(b for b in at.button if b.label == "Gerar relatório").click().run()
+    assert not at.exception, at.exception
+    assert "Onde estão os defeitos" in at.session_state["relatorio"][1].decode("utf-8")

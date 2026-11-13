@@ -30,7 +30,8 @@ def mapa_estatico(
     Com `segmentos`, a imagem e recortada na area deles e o contorno de cada um aparece em
     branco. Caixa pequena demais para enxergar na escala do mapa e aumentada ate ~10 px.
     """
-    img = cv2.imread(str(Path(run) / "previa.png"), cv2.IMREAD_UNCHANGED)
+    arq = dados.arquivo_previa(run)
+    img = cv2.imread(str(arq), cv2.IMREAD_UNCHANGED) if arq is not None else None
     if img is None:
         return b""
     if img.shape[2] == 4:  # fundo branco onde nao ha dado

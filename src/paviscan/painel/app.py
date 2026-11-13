@@ -28,12 +28,22 @@ COR_RGB = {k: [int(v[i : i + 2], 16) for i in (1, 3, 5)] for k, v in COR.items()
 COR_CONCEITO = relatorio.COR_CONCEITO
 COR_CONCEITO_RGB = {k: [int(v[i : i + 2], 16) for i in (1, 3, 5)] for k, v in COR_CONCEITO.items()}
 RUNS = Path(os.environ.get("PAVISCAN_RUNS", "runs"))
+# Versao publicada (Streamlit Community Cloud, ver scripts/publicar.py): so levantamentos ja
+# processados, em publicado/, sem ortofoto. Sem processar, sem editor e com a revisao so
+# para consulta: la a marcacao some quando o app reinicia e vale para todo mundo.
+PUBLICADO = os.environ.get("PAVISCAN_PUBLICADO") == "1" or (
+    "PAVISCAN_RUNS" not in os.environ and not RUNS.is_dir() and Path("publicado/runs").is_dir()
+)
+if PUBLICADO and "PAVISCAN_RUNS" not in os.environ:
+    RUNS = Path("publicado/runs")
 ALTURA_MAPA = 620
 SEM_BARRA = {"displayModeBar": False}
 ABAS = [
     "Visão geral", "Vias e trechos", "Inspeção", "Orçamento", "Dados e relatório",
     "Nova análise", "Próximos passos",
 ]  # fmt: skip
+if PUBLICADO:
+    ABAS.remove("Nova análise")
 
 st.set_page_config(page_title="PaviScan", page_icon=marca.icone(), layout="wide")
 st.markdown(marca.css(), unsafe_allow_html=True)
@@ -795,8 +805,16 @@ with st.sidebar:
     st.markdown(marca.titulo_app(), unsafe_allow_html=True)
     st.caption("Condição do pavimento a partir de ortofoto de drone")
     runs = dados.listar_runs(RUNS)
+    if PUBLICADO:
+        st.caption(
+            "Versão de demonstração: levantamentos já processados. Processar imagem nova e revisar "
+            "as áreas só na versão instalada."
+        )
     if not runs:
         st.info("Nenhum levantamento ainda. Use **Nova análise** para processar a primeira imagem.")
+if not runs and PUBLICADO:
+    st.error("Nenhum levantamento em `publicado/runs`.")
+    st.stop()
 if not runs:
     st.markdown(
         marca.faixa(
@@ -1130,11 +1148,15 @@ if aba == "Inspeção":
             f"{cont['manual']} adicionadas à mão"
         ),
     )
-    modo_rev = st.radio(
-        "Modo de revisão",
-        ["Triagem rápida", "Corrigir contorno", "Adicionar área que faltou"],
-        horizontal=True,
-        label_visibility="collapsed",
+    modo_rev = (
+        "Triagem rápida"
+        if PUBLICADO
+        else st.radio(
+            "Modo de revisão",
+            ["Triagem rápida", "Corrigir contorno", "Adicionar área que faltou"],
+            horizontal=True,
+            label_visibility="collapsed",
+        )
     )
     # a revisao enxerga tambem o que ja foi marcado como falso positivo
     det_insp = dados.filtrar(det_todos, area_min, area_max, conf_min, sev, segs, vias, classes)
@@ -1148,6 +1170,8 @@ if aba == "Inspeção":
             "Recorte em resolução cheia de cada área, com o contorno detectado. Marque ✓ no que é defeito "
             "e ✗ no que não é. Falso positivo sai dos indicadores, do orçamento e do relatório."
         )
+        if PUBLICADO:
+            st.info("Nesta versão de demonstração a revisão é só para consulta.")
         k1, k2, k3, _ = st.columns([1.1, 1.2, 1, 2.2])
         fila = k1.selectbox("Mostrar", list(FILAS))
         criterio = k2.selectbox("Ordenar por", ["Maior área", "Maior confiança", "Menor confiança"])
@@ -1178,22 +1202,23 @@ if aba == "Inspeção":
                         key=f"rm:{run.name}:{ident}",
                         on_click=_remover,
                         args=(run, ident),
+                        disabled=PUBLICADO,
                     )
                     continue
                 b1, b2, b3 = st.columns(3)
                 b1.button(
                     "✓", key=f"ok:{run.name}:{ident}", help="É defeito", on_click=_marcar,
-                    args=(run, ident, "confirmado"),
+                    args=(run, ident, "confirmado"), disabled=PUBLICADO,
                     type="primary" if item.revisao == "confirmado" else "secondary",
                 )  # fmt: skip
                 b2.button(
                     "✗", key=f"fp:{run.name}:{ident}", help="Falso positivo", on_click=_marcar,
-                    args=(run, ident, "falso_positivo"),
+                    args=(run, ident, "falso_positivo"), disabled=PUBLICADO,
                     type="primary" if item.revisao == "falso_positivo" else "secondary",
                 )  # fmt: skip
                 b3.button(
                     "↺", key=f"un:{run.name}:{ident}", help="Voltar a pendente", on_click=_marcar,
-                    args=(run, ident, "pendente"), disabled=item.revisao == "pendente",
+                    args=(run, ident, "pendente"), disabled=PUBLICADO or item.revisao == "pendente",
                 )  # fmt: skip
 
     elif orto_run is None:
@@ -1507,7 +1532,7 @@ if aba == "Próximos passos":
         "O próximo passo é plugar um modelo treinado (o YOLO do mestrado) pela mesma interface, sem "
         "mexer no resto do sistema: entrada, medidas, condição por trecho, orçamento e relatório ficam iguais."
     )
-    pasta_base = acervo.pasta_imagens() / "uavpdd"
+    pasta_base = (Path("publicado/dados") if PUBLICADO else acervo.pasta_imagens()) / "uavpdd"
     base = base_publica.resumo(pasta_base)
     if base:
         b1, b2 = st.columns([1, 1.4], gap="large")

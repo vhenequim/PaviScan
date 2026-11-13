@@ -371,14 +371,26 @@ def para_mapa(gdf: gpd.GeoDataFrame, colunas: list[str]) -> dict:
     return json.loads(gdf[[*cols, "geometry"]].to_crs(4326).to_json())
 
 
+def arquivo_previa(run: Path) -> Path | None:
+    """A previa do levantamento: `previa.webp` (versao publicada, bem menor) ou `previa.png`."""
+    for nome in ("previa.webp", "previa.png"):
+        arq = Path(run) / nome
+        if arq.is_file():
+            return arq
+    return None
+
+
 def previa_data_url(run: Path, lado_max: int = 4000) -> str | None:
-    """previa.png como data URL WebP (leve, com transparencia) para a camada de imagem."""
+    """Previa como data URL WebP (leve, com transparencia) para a camada de imagem."""
     from PIL import Image
 
-    arq = Path(run) / "previa.png"
-    if not arq.is_file():
+    arq = arquivo_previa(run)
+    if arq is None:
         return None
-    img = Image.open(arq).convert("RGBA")
+    img = Image.open(arq)
+    if arq.suffix == ".webp" and max(img.size) <= lado_max:  # ja vem pronta: sem recomprimir
+        return "data:image/webp;base64," + base64.b64encode(arq.read_bytes()).decode()
+    img = img.convert("RGBA")
     if max(img.size) > lado_max:
         img.thumbnail((lado_max, lado_max))
     buf = io.BytesIO()

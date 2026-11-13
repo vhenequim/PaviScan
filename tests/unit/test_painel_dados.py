@@ -101,3 +101,17 @@ def test_recorte_do_relatorio_escolhe_area_e_defeitos():
     assert list(d["id"]) == [3]
     d, s = dados.recorte_relatorio(det, seg, vias=[])
     assert d.empty and s.empty
+
+
+def test_previa_em_webp_vale_antes_do_png_e_vai_sem_recomprimir(tmp_path):
+    from PIL import Image
+
+    assert dados.arquivo_previa(tmp_path) is None and dados.previa_data_url(tmp_path) is None
+    Image.new("RGBA", (40, 30), (10, 20, 30, 255)).save(tmp_path / "previa.png")
+    assert dados.arquivo_previa(tmp_path).name == "previa.png"
+    Image.new("RGBA", (40, 30), (10, 20, 30, 255)).save(tmp_path / "previa.webp", format="WEBP")
+    assert dados.arquivo_previa(tmp_path).name == "previa.webp"
+    import base64
+
+    url = dados.previa_data_url(tmp_path)
+    assert base64.b64decode(url.split(",", 1)[1]) == (tmp_path / "previa.webp").read_bytes()
