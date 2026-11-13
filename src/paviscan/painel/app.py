@@ -12,7 +12,7 @@ import plotly.express as px
 import pydeck as pdk
 import streamlit as st
 
-from paviscan import acervo, base_publica, marca, orcamento, relatorio, revisao
+from paviscan import acervo, base_publica, geometria, marca, orcamento, relatorio, revisao
 from paviscan.painel import dados
 from paviscan.painel.dados import (
     CONCEITOS,
@@ -105,9 +105,16 @@ def _dica_defeito(linha) -> str:
     return (
         f"<b>#{int(linha.id)} · {ROTULO_CLASSE.get(linha.classe, linha.classe)}</b><br/>"
         f"Severidade {ROTULO_SEVERIDADE[linha.severidade].lower()} · {fmt(linha.area_m2)} m²<br/>"
-        f"{fmt(linha.largura_m)} × {fmt(linha.comprimento_m)} m · confiança {fmt(linha.confianca)}<br/>"
+        f"Retângulo na via: {_caixa_txt(linha)} · confiança {fmt(linha.confianca)}<br/>"
         f"{html.escape(str(linha.via))} · segmento {int(linha.segmento)}"
     )
+
+
+def _caixa_txt(linha) -> str:
+    """'1,20 × 0,80 m' (ao longo da via × transversal), ou o retangulo minimo em run antigo."""
+    if hasattr(linha, "caixa_ao_longo_m"):
+        return f"{fmt(linha.caixa_ao_longo_m)} × {fmt(linha.caixa_transversal_m)} m"
+    return f"{fmt(linha.largura_m)} × {fmt(linha.comprimento_m)} m"
 
 
 def _mapa(det, seg, cond_seg, resumo, imagem, mostrar_seg: bool, mostrar_orto: bool, relevo: bool):
@@ -172,30 +179,18 @@ def _mapa(det, seg, cond_seg, resumo, imagem, mostrar_seg: bool, mostrar_orto: b
                 pickable=True,
             )
         )
-        # anel em volta de cada defeito: aparece mesmo com o mapa afastado
-        pontos = pd.DataFrame(
-            {
-                "id": d["id"],
-                "lon": d["lon"],
-                "lat": d["lat"],
-                "raio": d["comprimento_m"] * 0.75 + 0.3,
-                "cor_linha": d["cor_linha"],
-                "dica": d["dica"],
-            }
-        )
+        # caixa de cada defeito: o menor retangulo paralelo a via que o envolve
+        caixas = d[["id", "cor_linha", "dica"]].set_geometry(geometria.caixas_de(d))
         camadas.append(
             pdk.Layer(
-                "ScatterplotLayer",
-                id="aneis",
-                data=pontos,
-                get_position="[lon, lat]",
-                get_radius="raio",
-                radius_min_pixels=5,
-                stroked=True,
+                "GeoJsonLayer",
+                id="caixas",
+                data=dados.para_mapa(caixas, ["id", "cor_linha", "dica"]),
                 filled=False,
-                get_line_color="cor_linha",
-                get_line_width=0.03,
-                line_width_min_pixels=1.5,
+                stroked=True,
+                get_line_color="properties.cor_linha",
+                get_line_width=0.04,  # metros; com o mapa afastado vale o minimo em pixel
+                line_width_min_pixels=2,
                 pickable=True,
             )
         )
@@ -226,7 +221,7 @@ def _selecionado(evento) -> int | None:
         objetos = evento.selection.objects
     except AttributeError:
         return None
-    for camada in ("buracos", "aneis"):
+    for camada in ("buracos", "caixas"):
         for obj in objetos.get(camada, []):
             ident = obj.get("id", obj.get("properties", {}).get("id"))
             if ident is not None:
@@ -245,7 +240,7 @@ def _ficha(linha, run: Path) -> None:
         unsafe_allow_html=True,
     )
     st.caption(
-        f"{fmt(linha.area_m2)} m² · {fmt(linha.largura_m)} × {fmt(linha.comprimento_m)} m · "
+        f"{fmt(linha.area_m2)} m² · retângulo na via {_caixa_txt(linha)} · "
         f"confiança {fmt(linha.confianca)}  \n{linha.via} · segmento {int(linha.segmento)}"
     )
 
@@ -267,6 +262,123 @@ def _orcar(det, seg, cfg_orc: dict, precos: pd.DataFrame, solucoes: pd.DataFrame
         "placeholder": bool(precos["placeholder"].any()),
         "seg_c": orcamento.trechos_a_recapear(orc),
     }
+
+
+def _chave(*partes) -> str:
+    """Sufixo de chave de widget que muda quando as opcoes mudam (evita valor fora das opcoes)."""
+    import zlib
+
+    return format(zlib.crc32(repr(partes).encode()), "x")
+
+
+def _escolha_do_relatorio(run: Path, det, seg_f):
+    """Menu do relatorio: area (vias e faixa de segmentos) e defeitos que entram.
+
+    Parte do que os filtros da barra lateral ja deixaram. Devolve (defeitos, segmentos,
+    frase do recorte ou None quando entra tudo).
+
+    A escolha fica tambem em `rel_salvo:<run>`, fora dos widgets: o Streamlit descarta o
+    estado do widget que nao foi desenhado (outra secao aberta), e as chaves mudam quando
+    as opcoes mudam. Defeito tirado a mao que some da lista por outro filtro continua tirado.
+    """
+    salvo = st.session_state.setdefault(f"rel_salvo:{run.name}", {})
+    seg_disp = seg_f.sort_values("segmento")
+    vias_todas = list(dict.fromkeys(seg_disp["via"].astype(str)))
+    presentes = set(det["classe"]) if len(det) else set()
+    classes_todas = [c for c in ROTULO_CLASSE if c in presentes] + sorted(
+        presentes - set(ROTULO_CLASSE)
+    )
+
+    def lembrado(nome: str, opcoes: list) -> list:
+        """A escolha guardada. "Todas" vale para as opcoes de agora (a lista pode ter
+        crescido); escolha parcial que nao existe mais volta a todas."""
+        guardado = salvo.get(nome)
+        if guardado is None or guardado["todas"]:
+            return list(opcoes)
+        valido = [o for o in guardado["valor"] if o in opcoes]
+        return valido if valido or not guardado["valor"] else list(opcoes)
+
+    def guardar(nome: str, valor: list, opcoes: list) -> None:
+        salvo[nome] = {"todas": set(valor) >= set(opcoes), "valor": list(valor)}
+
+    with st.container(border=True):
+        st.markdown("**O que entra no relatório**")
+        c1, c2 = st.columns([1.3, 1])
+        vias = c1.multiselect(
+            "Vias", vias_todas, default=lembrado("vias", vias_todas),
+            key=f"rel_vias:{_chave(run.name, vias_todas)}", placeholder="Escolha ao menos uma via",
+        )  # fmt: skip
+        segs = seg_disp[seg_disp["via"].astype(str).isin(vias)]["segmento"].astype(int).tolist()
+        de, ate = (segs[0], segs[-1]) if segs else (None, None)
+        if len(segs) > 1:
+            guardada = salvo.get("segs") or {"cheia": True, "faixa": (segs[0], segs[-1])}
+            faixa = tuple(guardada["faixa"])
+            if guardada["cheia"] or not (faixa[0] in segs and faixa[1] in segs):
+                faixa = (segs[0], segs[-1])  # faixa inteira acompanha a lista de segmentos
+            de, ate = c2.select_slider(
+                "Segmentos (área do relatório)", options=segs, value=faixa,
+                key=f"rel_segs:{_chave(run.name, segs)}",
+                help="Os segmentos são numerados ao longo de cada via. O mapa do relatório mostra só esta área.",
+            )  # fmt: skip
+        c3, c4, c5 = st.columns([1.2, 1.3, 1])
+        sev = c3.multiselect(
+            "Severidade", SEVERIDADES[::-1], default=lembrado("sev", SEVERIDADES[::-1]),
+            format_func=ROTULO_SEVERIDADE.get, key=f"rel_sev:{run.name}",
+        )  # fmt: skip
+        classes = c4.multiselect(
+            "Tipo de defeito", classes_todas, default=lembrado("classes", classes_todas),
+            format_func=lambda c: ROTULO_CLASSE.get(c, c),
+            key=f"rel_cls:{_chave(run.name, classes_todas)}",
+        )  # fmt: skip
+        so_conf = c5.toggle(
+            "Só os conferidos", value=bool(salvo.get("so_conf", False)), key=f"rel_conf:{run.name}",
+            help="Só as áreas confirmadas na revisão ou adicionadas à mão.",
+        )  # fmt: skip
+        d_area, s_area = dados.recorte_relatorio(det, seg_f, vias, de, ate, sev, classes, so_conf)
+        ordem = d_area.sort_values("area_m2", ascending=False)
+        rotulos = {
+            int(r.id): f"#{int(r.id)} · {ROTULO_CLASSE.get(r.classe, r.classe)} · "
+            f"{fmt(r.area_m2)} m² · segmento {int(r.segmento)}"
+            for r in ordem.itertuples()
+        }  # fmt: skip
+        tirados = set(salvo.get("fora", []))
+        fora = st.multiselect(
+            "Tirar defeitos específicos", list(rotulos), format_func=rotulos.get,
+            default=[i for i in rotulos if i in tirados],
+            key=f"rel_fora:{_chave(run.name, list(rotulos))}", placeholder="Nenhum",
+        )  # fmt: skip
+        # os tirados que estao fora da lista agora (outro filtro) continuam guardados
+        tirados = (tirados - set(rotulos)) | set(fora)
+        guardar("vias", vias, vias_todas)
+        guardar("sev", sev, SEVERIDADES)
+        guardar("classes", classes, classes_todas)
+        salvo.update(so_conf=so_conf, fora=sorted(tirados))
+        if len(segs) > 1:
+            salvo["segs"] = {"cheia": (de, ate) == (segs[0], segs[-1]), "faixa": (de, ate)}
+        det_rel = d_area[~d_area["id"].isin(fora)]
+        vazio = {"extensao_m": 0.0, "area_pista_m2": 0.0}
+        ext = dados.area_e_extensao(s_area) if len(s_area) else vazio
+        st.caption(
+            f"Entram **{len(det_rel)}** defeito(s) em **{len(s_area)}** segmento(s): "
+            f"{fmt(ext['extensao_m'], 0)} m de via, {fmt(ext['area_pista_m2'], 0)} m² de pista."
+        )
+    partes = []
+    if set(vias) != set(vias_todas):
+        partes.append("vias " + ", ".join(vias))
+    if segs and (de, ate) != (segs[0], segs[-1]):
+        partes.append(f"segmentos {de} a {ate}")
+    if set(sev) != set(SEVERIDADES):
+        nomes = ", ".join(ROTULO_SEVERIDADE[s].lower() for s in sev)
+        partes.append(f"severidade {nomes}" if sev else "nenhuma severidade")
+    if set(classes) != set(classes_todas):
+        nomes = ", ".join(ROTULO_CLASSE.get(c, c).lower() for c in classes)
+        partes.append(f"só {nomes}" if classes else "nenhum tipo de defeito")
+    if so_conf:
+        partes.append("só áreas conferidas na revisão")
+    if fora:
+        partes.append(f"{len(fora)} defeito(s) retirado(s) à mão")
+    escopo = "; ".join(partes) + "." if partes else None
+    return det_rel, s_area, escopo
 
 
 # ============================================================== revisao manual
@@ -295,7 +407,86 @@ def _remover(run: Path, ident: int) -> None:
 
 @st.cache_data(show_spinner="Lendo a ortofoto em resolução cheia...", max_entries=24)
 def _janela(orto: str, limites: tuple, carimbo: float):
-    return revisao.janela_de_edicao(Path(orto), limites, 1200, dados.parametros()["raster"])
+    """Recorte em resolucao cheia como data URL JPEG (leve) e os limites que ele cobre."""
+    import base64
+
+    import cv2
+
+    cfg = dados.parametros()
+    img, limites = revisao.janela_de_edicao(
+        Path(orto), limites, int(cfg["revisao"]["janela_px"]), cfg["raster"]
+    )
+    ok, jpg = cv2.imencode(
+        ".jpg", cv2.cvtColor(img, cv2.COLOR_RGB2BGR), [cv2.IMWRITE_JPEG_QUALITY, 88]
+    )
+    return "data:image/jpeg;base64," + base64.b64encode(jpg.tobytes()).decode(), limites
+
+
+def _edicao_direta(grupo, desenho, limites: list):
+    """Script do mapa: poligonos do grupo ja editaveis, e cada mudanca vai para o Python.
+
+    Os vertices viram quadradinhos arrastaveis assim que o mapa abre (e em todo poligono
+    desenhado depois). Cada arraste dispara `draw:edited`, que o streamlit-folium escuta
+    para devolver os desenhos; sem isso so o botao "Save" do Leaflet.draw avisaria.
+    `options.editing`/`original` sao exigidos pelo Leaflet.draw 1.0.2 fora da barra dele.
+    O Leaflet 1.9 se diz "de toque" em todo navegador, e o Leaflet.draw troca o vertice
+    por um quadrado de 20 px; aqui volta a 10 px. O enquadramento e refeito depois que
+    a moldura do componente assenta (o `fit_bounds` do folium roda com ela menor).
+    """
+    from branca.element import MacroElement
+    from jinja2 import Template
+
+    elemento = MacroElement()
+    elemento._name = "EdicaoDireta"
+    elemento.grupo = grupo
+    elemento.desenho = desenho
+    elemento.limites = limites
+    elemento._template = Template(
+        """
+{% macro script(this, kwargs) %}
+(function () {
+    var mapa = {{ this._parent.get_name() }};
+    var grupo = {{ this.grupo.get_name() }};
+    var icone = new L.DivIcon({iconSize: new L.Point(10, 10), className: 'leaflet-div-icon leaflet-editing-icon'});
+    L.Edit.PolyVerticesEdit.prototype.options.icon = icone;
+    L.Edit.PolyVerticesEdit.prototype.options.touchIcon = icone;
+    // so muda o tamanho do vertice ao desenhar poligono novo; se a estrutura interna do
+    // Leaflet.draw mudar, fica o tamanho padrao e o resto segue funcionando
+    try { {{ this.desenho.get_name() }}._toolbars.draw._modes.polygon.handler.options.icon = icone; }
+    catch (e) { console.warn('PaviScan: vertice de desenho no tamanho padrao', e); }
+    var mexeu = false;  // depois que a pessoa mexe no mapa, nao reenquadra mais
+    ['pointerdown', 'wheel', 'touchstart'].forEach(function (ev) {
+        mapa.getContainer().addEventListener(ev, function () { mexeu = true; }, {passive: true});
+    });
+    var ultimo = '';
+    function enquadrar() {  // so quando o tamanho do mapa muda
+        if (mexeu) { return; }
+        mapa.invalidateSize({pan: false});
+        var t = mapa.getSize(), chave = t.x + 'x' + t.y;
+        if (t.x < 50 || t.y < 50 || chave === ultimo) { return; }
+        ultimo = chave;
+        mapa.fitBounds({{ this.limites|tojson }}, {animate: false});
+    }
+    function avisar() { mapa.fire('draw:edited', {layers: grupo}); }
+    function ativar(camada) {
+        if (!camada.editing || camada._paviscan) { return; }
+        camada._paviscan = true;
+        camada.options.original = L.extend({}, camada.options);
+        camada.options.editing = L.extend({}, camada.options, {dashArray: '6, 4', fillOpacity: 0.15});
+        camada.editing.enable();
+        camada.on('edit', avisar);
+    }
+    grupo.eachLayer(ativar);
+    mapa.on('draw:created', function (e) { setTimeout(function () { ativar(e.layer); }, 0); });
+    var n = 0, relogio = setInterval(function () {
+        enquadrar();
+        if (++n >= 30 || mexeu) { clearInterval(relogio); }
+    }, 300);
+})();
+{% endmacro %}
+"""
+    )
+    return elemento
 
 
 def _editor(orto: Path, limites: tuple, det_todos, editar, chave: str) -> list[dict]:
@@ -356,8 +547,10 @@ def _editor(orto: Path, limites: tuple, det_todos, editar, chave: str) -> list[d
         ).add_to(mapa)
     grupo = folium.FeatureGroup(name="edicao")
     if editar is not None:
-        local = para_tela(editar)
-        for parte in local.geoms if hasattr(local, "geoms") else [local]:
+        # contorno simplificado: mil vertices arrastaveis travam o mapa
+        leve = revisao.para_edicao(editar, int(dados.parametros()["revisao"]["vertices_max"]))
+        local = para_tela(leve)
+        for parte in geometria.poligonos(local):
             folium.Polygon(
                 locations=[(y, x) for x, y in parte.exterior.coords],
                 color="#D62839", weight=3, fill_opacity=0.08,
@@ -367,9 +560,13 @@ def _editor(orto: Path, limites: tuple, det_todos, editar, chave: str) -> list[d
     so_poligono["polygon"] = {
         "shapeOptions": {"color": "#D62839", "weight": 3, "fillOpacity": 0.08}
     }
-    Draw(
-        feature_group=grupo, draw_options=so_poligono, edit_options={"edit": True, "remove": True}
-    ).add_to(mapa)
+    # sem o botao "editar": os poligonos ja abrem editaveis (abaixo). Com `"edit": True` o
+    # Leaflet.draw 1.0.2 nem montava os vertices de poligono que ele nao desenhou.
+    desenho = Draw(
+        feature_group=grupo, draw_options=so_poligono, edit_options={"edit": False, "remove": True}
+    )
+    desenho.add_to(mapa)
+    _edicao_direta(grupo, desenho, lim).add_to(mapa)
     saida = st_folium(mapa, height=560, width=None, returned_objects=["all_drawings"], key=chave)
     desenhos = (saida or {}).get("all_drawings") or []
     return [
@@ -386,7 +583,10 @@ def _refazer_recortes(run: Path, orto: Path, ids: list[int], det_bruto, seg, par
         linha = atual[atual["id"] == ident]
         if len(linha):
             try:
-                revisao.recorte_do_defeito(run, orto, ident, linha.geometry.iloc[0], params)
+                revisao.recorte_do_defeito(
+                    run, orto, ident, linha.geometry.iloc[0], params,
+                    geometria.caixas_de(linha).iloc[0],
+                )  # fmt: skip
             except (ValueError, OSError) as erro:  # a revisao ja esta salva; so a miniatura falhou
                 st.warning(
                     f"A área #{ident} foi salva, mas a miniatura não pôde ser refeita: {erro}"
@@ -1019,9 +1219,10 @@ if aba == "Inspeção":
             )
             linha = ordem[ordem["id"] == alvo].iloc[0]
             st.caption(
-                "O contorno atual está em vermelho. Clique no ícone de editar (à esquerda do mapa) para arrastar "
-                "os vértices, ou apague e desenhe um polígono novo. Depois clique em Salvar contorno. "
-                "Em amarelo, as outras áreas já marcadas ali."
+                "O contorno atual está em vermelho e já pode ser ajustado: arraste os quadradinhos brancos "
+                "(vértices); arraste o quadradinho do meio de um lado para criar um vértice; clique num vértice "
+                "para apagá-lo. Para refazer do zero, apague com a lixeira e desenhe outro com a ferramenta de "
+                "polígono. Depois clique em Salvar contorno. Em amarelo, as outras áreas já marcadas ali."
             )
             x0, y0, x1, y1 = linha.geometry.bounds
             m = 2 * float(params["recortes"]["margem_m"])
@@ -1079,7 +1280,8 @@ if aba == "Inspeção":
         )
         st.caption(
             "Use a ferramenta de polígono (à esquerda do mapa) e contorne cada área que faltou; pode desenhar "
-            "várias. Em amarelo, as áreas que já existem. Depois clique em Adicionar."
+            "várias, e cada uma continua ajustável pelos vértices. Em amarelo, as áreas que já existem. "
+            "Depois clique em Adicionar."
         )
         x0, y0, x1, y1 = trechos[trechos["segmento"] == seg_alvo].geometry.iloc[0].bounds
         m = float(params["recortes"]["margem_m"])
@@ -1218,17 +1420,17 @@ if aba == "Orçamento":
 # ============================================================== dados e relatorio
 if aba == "Dados e relatório":
     st.subheader("Relatório executivo")
+    det_rel, seg_rel, escopo = _escolha_do_relatorio(run, det, seg_f)
+    orc_rel = _orcar(det_rel, seg_rel, cfg_orc, precos, solucoes)
     r1, r2 = st.columns([1, 3])
-    # assinatura do que esta na tela: muda com filtro, revisao ou orcamento
+    # assinatura do que entra no relatorio: muda com a escolha, filtro, revisao ou orcamento
     assinatura = (
-        run.name, len(det), round(float(det["area_m2"].sum()), 3) if len(det) else 0.0,
-        len(seg_f), round(orc["total"]["total"], 2), _carimbo_rev(run),
+        run.name, tuple(det_rel["id"].astype(int)), tuple(seg_rel["segmento"].astype(int)),
+        round(orc_rel["total"]["total"], 2), _carimbo_rev(run),
     )  # fmt: skip
-    if r1.button("Gerar relatório", type="primary", width="stretch"):
-        st.session_state["relatorio"] = (
-            assinatura,
-            relatorio.gerar_html(run, det, seg_f, resumo, params, orc).encode("utf-8"),
-        )
+    if r1.button("Gerar relatório", type="primary", width="stretch", disabled=seg_rel.empty):
+        pagina = relatorio.gerar_html(run, det_rel, seg_rel, resumo, params, orc_rel, escopo)
+        st.session_state["relatorio"] = (assinatura, pagina.encode("utf-8"))
     pronto = st.session_state.get("relatorio")
     if pronto and pronto[0] == assinatura:
         r2.download_button(
@@ -1239,7 +1441,7 @@ if aba == "Dados e relatório":
         )
     else:
         r2.caption(
-            "Uma página com indicadores, mapa, condição por via, trechos prioritários, estimativa de reparo e os maiores defeitos, com os filtros atuais."
+            "Uma página com indicadores, mapa, condição por via, trechos prioritários, estimativa de reparo e os maiores defeitos, só da área e dos defeitos escolhidos acima."
         )
     st.subheader("Defeitos")
     tab = dados.tabela(det)
@@ -1255,6 +1457,12 @@ if aba == "Dados e relatório":
             "area_m2": st.column_config.NumberColumn("Área (m²)", format="%.2f"),
             "largura_m": st.column_config.NumberColumn("Largura (m)", format="%.2f"),
             "comprimento_m": st.column_config.NumberColumn("Comprimento (m)", format="%.2f"),
+            "caixa_ao_longo_m": st.column_config.NumberColumn(
+                "Retângulo ao longo da via (m)", format="%.2f"
+            ),
+            "caixa_transversal_m": st.column_config.NumberColumn(
+                "Retângulo transversal (m)", format="%.2f"
+            ),
             "confianca": st.column_config.ProgressColumn(
                 "Confiança", format="%.2f", min_value=0.0, max_value=1.0
             ),

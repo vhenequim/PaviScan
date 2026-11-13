@@ -83,3 +83,21 @@ def test_contagem_por_severidade_sempre_tem_as_tres_faixas():
     det, _ = _dados()
     assert dados.contagem_severidade(det) == {"baixa": 1, "media": 1, "alta": 1}
     assert dados.contagem_severidade(det.iloc[0:0]) == {"baixa": 0, "media": 0, "alta": 0}
+
+
+def test_recorte_do_relatorio_escolhe_area_e_defeitos():
+    det, seg = _dados()
+    det["classe"] = ["panela", "panela", "solo_exposto"]
+    det["revisao"] = ["confirmado", "pendente", "manual"]
+    d, s = dados.recorte_relatorio(det, seg)
+    assert list(d["id"]) == [1, 2, 3] and list(s["segmento"]) == [0, 1]
+    d, s = dados.recorte_relatorio(det, seg, seg_de=1, seg_ate=1)
+    assert list(d["id"]) == [3] and list(s["segmento"]) == [1]  # area: so o segmento 1
+    d, s = dados.recorte_relatorio(det, seg, vias=["Rua A"], severidades=["media"])
+    assert list(d["id"]) == [2] and list(s["segmento"]) == [0]  # o segmento conta mesmo sem defeito
+    d, _ = dados.recorte_relatorio(det, seg, so_conferidos=True, fora=[3])
+    assert list(d["id"]) == [1]
+    d, _ = dados.recorte_relatorio(det, seg, classes=["solo_exposto"])
+    assert list(d["id"]) == [3]
+    d, s = dados.recorte_relatorio(det, seg, vias=[])
+    assert d.empty and s.empty

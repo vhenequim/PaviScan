@@ -200,3 +200,14 @@ def test_acervo_guarda_valida_e_lista(tmp_path):
     assert json.loads(img.eixo.read_text())["features"][0]["properties"]["nome"] == "Via 1"
     with pytest.raises(ValueError):
         acervo.gravar_eixo(img, [])
+
+
+def test_buraco_corta_pela_caixa_paralela_a_via(cfg):
+    det = _defeitos([(1, 0.5, 1.0, "panela", "media", 0)])
+    det["caixa_ao_longo_m"], det["caixa_transversal_m"] = 1.2, 0.7  # buraco inclinado na via
+    m = cfg["margem_corte_m"]
+    corte = orcamento.area_corte(det, cfg)
+    assert abs(corte.iloc[0] - (1.2 + 2 * m) * (0.7 + 2 * m)) < 1e-9
+    sem = orcamento.area_corte(det.drop(columns=["caixa_ao_longo_m", "caixa_transversal_m"]), cfg)
+    # tabela antiga, sem as colunas da caixa: retangulo minimo
+    assert abs(sem.iloc[0] - (1.0 + 2 * m) * (0.5 + 2 * m)) < 1e-9

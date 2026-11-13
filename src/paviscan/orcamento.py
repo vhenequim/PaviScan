@@ -42,12 +42,19 @@ def carregar_tabelas(config: Path | None = None) -> tuple[pd.DataFrame, pd.DataF
 def area_corte(defeitos: gpd.GeoDataFrame, cfg: dict) -> pd.Series:
     """Area a cortar em cada defeito.
 
-    Buraco: retangulo minimo com `margem_corte_m` de folga em volta. Classe extensa
-    (`corte_pela_area`): a propria area vezes `folga_area`, porque o retangulo de uma
-    faixa longa e torta seria muito maior que o dano.
+    Buraco: o corte do remendo e retangular, com lados paralelo e perpendicular ao eixo
+    da via: a caixa do defeito (`caixa_ao_longo_m` x `caixa_transversal_m`) com
+    `margem_corte_m` de folga em volta. Sem as colunas da caixa (tabela antiga), usa o
+    retangulo minimo rotacionado. Classe extensa (`corte_pela_area`): a propria area
+    vezes `folga_area`, porque o retangulo de uma faixa longa e torta seria muito maior
+    que o dano.
     """
     m = float(cfg["margem_corte_m"])
-    ret = (defeitos["largura_m"] + 2 * m) * (defeitos["comprimento_m"] + 2 * m)
+    if {"caixa_ao_longo_m", "caixa_transversal_m"} <= set(defeitos.columns):
+        a, b = defeitos["caixa_transversal_m"], defeitos["caixa_ao_longo_m"]
+    else:
+        a, b = defeitos["largura_m"], defeitos["comprimento_m"]
+    ret = (a + 2 * m) * (b + 2 * m)
     pela_area = defeitos["classe"].isin(cfg.get("corte_pela_area", []))
     return ret.where(~pela_area, defeitos["area_m2"] * float(cfg["folga_area"]))
 
@@ -104,21 +111,40 @@ def orcar(
     """
     preco = dict(zip(precos["servico"], precos["preco_unit"].astype(float), strict=True))
     pavimento, terreno = cfg["pavimento"], cfg["terreno"]
+    if not len(defeitos):
+        return pd.DataFrame(columns=COLUNAS)
+    corte = area_corte(defeitos, cfg)
+    blocos = []
+    # A e B: todo defeito x todo servico da opcao, de uma vez (sem laco por defeito)
+    base = pd.DataFrame(
+        {"id": defeitos["id"].astype(int).to_numpy(), "area_corte": corte.to_numpy()}
+    )
+    for opcao in ("A", "B"):
+        linhas = linhas_da_solucao(solucoes, opcao, pavimento, terreno)
+        faltam = [s for s in linhas["servico"] if s not in preco]
+        if faltam:
+            raise KeyError(f"servico sem preco em config/precos.csv: {faltam[0]}")
+        cruz = base.merge(linhas[["servico", "unidade", "base_quantidade", "fator"]], how="cross")
+        outras = set(cruz["base_quantidade"]) - {"area_corte"}
+        if outras:
+            raise KeyError(f"base de quantidade desconhecida na opcao {opcao}: {sorted(outras)[0]}")
+        cruz["opcao"] = opcao
+        cruz["quantidade"] = cruz["area_corte"] * cruz["fator"].astype(float)
+        cruz["preco_unit"] = cruz["servico"].map(preco)
+        cruz["custo"] = cruz["quantidade"] * cruz["preco_unit"]
+        blocos.append(cruz[COLUNAS])
+    # C: so nos segmentos em que a area de corte passa do limite
     itens: list[dict] = []
-    if len(defeitos):
-        corte = area_corte(defeitos, cfg)
-        for opcao in ("A", "B"):
-            linhas = linhas_da_solucao(solucoes, opcao, pavimento, terreno)
-            for ident, a in zip(defeitos["id"], corte, strict=True):
-                itens += _itens(int(ident), opcao, {"area_corte": float(a)}, linhas, preco)
-        linhas_c = linhas_da_solucao(solucoes, "C", pavimento, terreno)
-        por_seg = corte.groupby(defeitos["segmento"]).sum()
-        for seg in segmentos.itertuples():
-            fracao = float(por_seg.get(seg.segmento, 0.0)) / seg.area_pista_m2
-            if fracao > cfg["limite_recapeamento"]:
-                base = {"area_segmento": float(seg.area_pista_m2)}
-                itens += _itens(f"seg-{int(seg.segmento)}", "C", base, linhas_c, preco)
-    return pd.DataFrame(itens, columns=COLUNAS)
+    linhas_c = linhas_da_solucao(solucoes, "C", pavimento, terreno)
+    por_seg = corte.groupby(defeitos["segmento"]).sum()
+    for seg in segmentos.itertuples():
+        fracao = float(por_seg.get(seg.segmento, 0.0)) / seg.area_pista_m2
+        if fracao > cfg["limite_recapeamento"]:
+            base_c = {"area_segmento": float(seg.area_pista_m2)}
+            itens += _itens(f"seg-{int(seg.segmento)}", "C", base_c, linhas_c, preco)
+    if itens:
+        blocos.append(pd.DataFrame(itens, columns=COLUNAS))
+    return pd.concat([b.astype({"id": object}) for b in blocos], ignore_index=True)
 
 
 def plano_recomendado(

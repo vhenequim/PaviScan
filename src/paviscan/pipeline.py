@@ -9,17 +9,86 @@ from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 
+import geopandas as gpd
 from rasterio.windows import transform as transform_da_janela
 from shapely.geometry import box
 from shapely.ops import unary_union
 from shapely.prepared import prep
 
 from . import config as config_mod
-from . import exportar, geometria, indicadores, ingestao, orcamento
+from . import exportar, geometria, indicadores, ingestao, orcamento, revisao
 from . import pista as pista_mod
 from .deteccao import Deteccao, criar
 
 Progresso = Callable[[float, str], None]
+
+
+def _revisao_nova(saida: Path, orto: Path, ds, defeitos, params: dict) -> tuple[str, dict | None]:
+    """O que fazer com a revisao manual de um processamento anterior desta pasta.
+
+    So calcula, nao grava nada: a revisao nova so pode ir para o disco depois do
+    `defeitos.geojson` novo (`_gravar_revisao`), senao uma falha no meio deixaria ids novos
+    apontando para o arquivo antigo. Devolve ("nada", None), ("guardar", None) quando a
+    ortofoto e outra (caminho ou tamanho diferentes no resumo antigo) ou ("levar", revisao)
+    com cada revisao no defeito novo que mais se sobrepoe (`revisao.reancorar`).
+    """
+    arq_rev, arq_def = revisao.caminho(saida), saida / "defeitos.geojson"
+    arq_res = saida / "resumo.json"
+    if not arq_rev.is_file():
+        return "nada", None
+    antigo = json.loads(arq_res.read_text()) if arq_res.is_file() else {}
+    mesma = (
+        antigo.get("ortofoto_caminho") == str(orto.resolve())
+        and antigo.get("largura_px") == int(ds.width)
+        and antigo.get("altura_px") == int(ds.height)
+    )
+    if not mesma:
+        return "guardar", None
+    antigos = gpd.read_file(arq_def) if arq_def.is_file() else gpd.GeoDataFrame(geometry=[])
+    if len(antigos) and antigos.crs is not None and defeitos.crs is not None:
+        antigos = antigos.to_crs(defeitos.crs)
+    iou_min = float(params["revisao"]["reancorar_iou_min"])
+    rev, perdidos = revisao.reancorar(revisao.carregar(saida), antigos, defeitos, iou_min)
+    if perdidos:
+        warnings.warn(
+            f"{len(perdidos)} revisao(oes) sem defeito correspondente depois de reprocessar; "
+            "ficaram em `sem_par` no revisao.json",
+            stacklevel=3,
+        )
+    return "levar", rev
+
+
+def _gravar_revisao(
+    saida: Path, orto: Path, plano: tuple[str, dict | None], defeitos, segmentos, params: dict
+) -> None:
+    """Aplica o plano de `_revisao_nova`, ja com o `defeitos.geojson` novo gravado.
+
+    Imagem trocada: a revisao antiga vira `revisao_<data>.json` e a nova comeca vazia.
+    Revisao levada: grava e refaz as miniaturas das areas corrigidas e manuais, que
+    `exportar.recortes` apagou.
+    """
+    acao, rev = plano
+    if acao == "guardar":
+        arq_rev = revisao.caminho(saida)
+        guardada = arq_rev.with_name(f"revisao_{datetime.now():%Y%m%d_%H%M%S}.json")
+        arq_rev.replace(guardada)
+        aviso = f"ortofoto diferente: a revisao antiga foi guardada em {guardada.name}"
+        warnings.warn(aviso, stacklevel=3)
+        return
+    if acao != "levar" or rev is None:
+        return
+    revisao.gravar(saida, rev)
+    atual = revisao.aplicar(defeitos, segmentos, rev, params["severidade"])
+    refazer = atual[atual["corrigido"]]
+    if refazer.empty:
+        return
+    with ingestao.abrir(orto) as ds:
+        escala = ingestao.escala_uint8(ds, params["raster"])
+        for ident, geom, caixa in zip(
+            refazer["id"], refazer.geometry, geometria.caixas_de(refazer), strict=True
+        ):
+            destino = saida / "recortes" / f"rev_{int(ident)}.jpg"
+            exportar.recorte(ds, geom, destino, params["recortes"], escala, caixa)
 
 
 def _inteiras(
@@ -139,7 +208,9 @@ def processar(
         segmentos = pista_mod.segmentar(pista_gdf, float(seg["comprimento_m"]), seg["resto_min_m"])
         unicos = geometria.deduplicar(itens, t["duplicata_min"])
         unicos = geometria.repartir(unicos, segmentos, seg["pedaco_min_m2"])
-        defeitos = geometria.medir(unicos, ds.crs, gsd, params["severidade"])
+        defeitos = geometria.medir(
+            unicos, ds.crs, gsd, params["severidade"], params.get("contorno")
+        )
         cortadas = int(defeitos["na_emenda"].sum()) if len(defeitos) else 0
         if cortadas:
             warnings.warn(
@@ -149,6 +220,7 @@ def processar(
                 stacklevel=2,
             )
         defeitos = indicadores.atribuir_segmento(defeitos, segmentos)
+        defeitos = geometria.com_caixa(defeitos, pista_mod.angulos(segmentos))
         segmentos = indicadores.por_segmento(defeitos, segmentos)
 
         avisar(0.92, "Gravando previa e recortes")
@@ -156,6 +228,7 @@ def processar(
             orto, saida, int(params["previa"]["largura_max_px"]), params["moldura"], escala
         )
         exportar.recortes(ds, defeitos, saida, params["recortes"], escala)
+        plano_rev = _revisao_nova(saida, orto, ds, defeitos, params)
 
         resumo = indicadores.resumo(
             defeitos,
@@ -181,5 +254,6 @@ def processar(
     plano, escolha = orcamento.plano_recomendado(defeitos, orc, cfg_orc)
     resumo.update(orcamento.gravar(saida, orc, plano, escolha, precos, float(cfg_orc["bdi"])))
     exportar.gravar(saida, defeitos, segmentos, resumo)
+    _gravar_revisao(saida, orto, plano_rev, defeitos, segmentos, params)
     avisar(1.0, "Pronto")
     return saida

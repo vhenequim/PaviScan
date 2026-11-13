@@ -58,20 +58,24 @@ As demais abas:
 | Vias e trechos | Conceito e índice por via, perfil ao longo da pista, piores segmentos |
 | Inspeção | Revisão manual: marcar cada área como defeito ou falso positivo, corrigir o contorno e adicionar área que faltou |
 | Orçamento | Plano recomendado e alternativas, por via e por serviço, com preços, BDI, revestimento e terreno ajustáveis |
-| Dados e relatório | Relatório executivo em HTML (imprime em PDF), tabela e downloads CSV, XLSX e GeoJSON |
+| Dados e relatório | Relatório executivo em HTML (imprime em PDF) da área e dos defeitos escolhidos num menu, tabela e downloads CSV, XLSX e GeoJSON |
 | Próximos passos | O caminho para o modelo treinado, com a base pública UAV-PDD2023 |
 
 Os filtros da barra lateral (tipo de defeito, área, severidade, confiança, via, segmento) valem para todas as abas, inclusive orçamento e relatório.
+
+Para o relatório há ainda o menu **O que entra no relatório**: a área (vias e faixa de segmentos) e os defeitos (severidade, tipo, só os conferidos na revisão, e tirar defeitos um a um). Os indicadores, o orçamento e o mapa do relatório saem só desse recorte; o mapa é recortado na área escolhida e o topo do relatório diz qual foi o recorte.
+
+No mapa, cada defeito aparece dentro do seu **retângulo na via**: o menor retângulo com um lado paralelo e outro perpendicular ao eixo da via que envolve o defeito. É o mesmo retângulo das miniaturas (em amarelo) e do mapa do relatório, e é por ele, mais a folga de 30 cm, que o orçamento mede o corte do remendo.
 
 ### Revisão manual
 
 Na aba **Inspeção** há três modos:
 
 - **Triagem rápida.** Cada área aparece em recorte de resolução cheia, com ✓ (é defeito), ✗ (falso positivo) e ↺ (voltar a pendente). A fila mostra primeiro o que ainda não foi conferido.
-- **Corrigir contorno.** A área abre num mapa com a ortofoto em resolução cheia; arraste os vértices ou desenhe um polígono novo. As medidas, a severidade e o segmento são recalculados.
+- **Corrigir contorno.** A área abre num mapa com a ortofoto em resolução cheia, com o contorno já editável (no máximo 30 vértices): arraste os quadradinhos brancos, arraste o do meio de um lado para criar um vértice, clique num vértice para apagá-lo, ou apague com a lixeira e desenhe outro. Depois, Salvar contorno. As medidas, a severidade, o segmento e o retângulo na via são recalculados.
 - **Adicionar área que faltou.** Escolha o trecho e contorne o que o detector não achou.
 
-Falso positivo sai dos indicadores, do orçamento e do relatório (há uma chave na barra lateral para incluí-los de volta). A revisão fica em `runs/<nome>/revisao.json` e nunca altera o que o detector gravou: dá para desfazer, e o par detecção + revisão serve de rótulo para treinar um modelo depois. Reprocessar a imagem renumera os defeitos e invalida a revisão daquele levantamento.
+Falso positivo sai dos indicadores, do orçamento e do relatório (há uma chave na barra lateral para incluí-los de volta). A revisão fica em `runs/<nome>/revisao.json` e nunca altera o que o detector gravou: dá para desfazer, e o par detecção + revisão serve de rótulo para treinar um modelo depois. Reprocessar a mesma imagem renumera os defeitos, mas a revisão vai junto: cada marcação passa para o defeito novo que mais se sobrepõe ao antigo (pelo menos 50 % de sobreposição, `revisao.reancorar_iou_min`). O que não achar par sai das contas e fica guardado em `sem_par` no `revisao.json`. Se a imagem for outra, a revisão antiga é guardada como `revisao_<data>.json` e a nova começa vazia.
 
 ## Usar pela linha de comando
 
@@ -99,8 +103,8 @@ Imagens de trabalho:
 
 | Arquivo | Conteúdo |
 |---|---|
-| `defeitos.geojson` | Um polígono por defeito, em UTM: `id`, `classe`, `area_m2`, `largura_m`, `comprimento_m`, `confianca`, `severidade`, `segmento`, `via`, `na_emenda` |
-| `segmentos.geojson` | Trechos de 20 m, só onde a ortofoto tem dado: `area_pista_m2`, `n_buracos`, `area_buracos_m2`, `pct_afetada` |
+| `defeitos.geojson` | Um polígono por defeito, em UTM: `id`, `classe`, `area_m2`, `largura_m`, `comprimento_m`, `confianca`, `severidade`, `segmento`, `via`, `na_emenda`, e o retângulo na via: `angulo_via` (graus), `caixa_ao_longo_m`, `caixa_transversal_m` |
+| `segmentos.geojson` | Trechos de 20 m, só onde a ortofoto tem dado: `area_pista_m2`, `n_buracos`, `area_buracos_m2`, `pct_afetada`, `angulo_via` |
 | `orcamento.csv`, `orcamento.xlsx` | Quantitativos e custo por defeito e por opção de reparo |
 | `resumo.json` | Totais, GSD, detector, custos, limites da prévia, crédito da imagem |
 | `previa.png`, `recortes/<id>.jpg` | Ortofoto reduzida para o mapa e miniatura em resolução cheia de cada defeito |
@@ -117,13 +121,15 @@ Sem aprendizado: cada ponto é comparado com o pavimento em volta, com limiar ro
 
 A confiança junta contraste e nitidez da borda (e forma compacta, no buraco). Todos os limiares estão em `config/params.yaml`.
 
+O contorno que sai da máscara segue os pixels em escada. Ele é simplificado com tolerância de 3 cm, ou 3 % do lado equivalente do defeito se for maior (`contorno` no `params.yaml`), e reescalado para manter a área medida nos pixels: as medidas não mudam e os contornos ficam com um terço a um quarto dos vértices.
+
 Na cena sintética (sementes 7, 11, 23, 42; GSD de 2, 3 e 5 cm): recall de 100 %, zero falso positivo, erro mediano de área de 3 a 6 %, zero detecção em pista limpa.
 
 ## Condição e orçamento
 
 - **Índice de condição** (0 a 100) e **conceito** (A a E) por segmento e por via: perde 8 pontos por 1 % de área afetada e 1 ponto por buraco a cada 100 m (`condicao` no `params.yaml`). Revestimento perdido pesa só pela área: seus pedaços não entram na contagem por 100 m. É um índice de trabalho para ordenar trechos. Não é IGG nem ICP de norma.
 - **Orçamento.** Três soluções em `config/solucoes.csv`: A, tapa-buraco superficial; B, remendo profundo; C, fresagem e recapeamento do trecho inteiro, quando a área de corte passa de 15 % do segmento. O plano recomendado usa A para buraco pequeno ou médio, B para buraco grande e para revestimento perdido, e troca por C nos trechos críticos. O BDI entra só no total.
-- O plano recomendado pode sair mais caro que remendar tudo (opção B), porque recapear o trecho inteiro custa mais que remendar só as áreas. É efeito do gatilho de 15 % e dos preços; ajuste os dois na tela. A opção C orça sempre CBUQ, qualquer que seja o revestimento escolhido, porque é assim que está em `config/solucoes.csv`. A folga de corte vale para buracos; revestimento perdido é orçado pela própria área vezes 1,2.
+- O plano recomendado pode sair mais caro que remendar tudo (opção B), porque recapear o trecho inteiro custa mais que remendar só as áreas. É efeito do gatilho de 15 % e dos preços; ajuste os dois na tela. A opção C orça sempre CBUQ, qualquer que seja o revestimento escolhido, porque é assim que está em `config/solucoes.csv`. O corte de um buraco é o seu retângulo na via (lados paralelo e perpendicular ao eixo, como se marca um remendo) com 30 cm de folga em volta; revestimento perdido é orçado pela própria área vezes 1,2.
 - **Os preços de `config/precos.csv` são ilustrativos** (fonte `PLACEHOLDER`). O painel avisa enquanto houver um deles. Troque pelos de referência (SICRO, SINAPI ou contrato) antes de usar qualquer valor.
 
 ## Limites, para dizer na apresentação

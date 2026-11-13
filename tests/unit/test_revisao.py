@@ -141,3 +141,167 @@ def test_desenho_invalido_e_erro_e_revisao_antiga_e_ignorada(tmp_path):
     )
     r = revisao.aplicar(det, seg, revisao.carregar(tmp_path), FAIXAS)
     assert len(r) == 2 and set(r["revisao"]) == {"pendente"}
+
+
+def test_reancorar_leva_a_revisao_pelo_contorno_e_nao_pelo_numero():
+    a, b, c = box(0, 0, 1, 1), box(10, 0, 11, 1), box(20, 0, 21, 1)
+    antigos = gpd.GeoDataFrame({"id": [1, 2, 3]}, geometry=[a, b, c], crs=CRS)
+    # reprocessado: b virou 1, a virou 2 (um pouco menor), c sumiu, d e novo
+    novos = gpd.GeoDataFrame(
+        {"id": [1, 2, 3, 4]},
+        geometry=[b, box(0, 0, 1, 0.9), box(30, 0, 31, 1), box(40, 0, 41, 1)],
+        crs=CRS,
+    )
+    contorno = mapping(box(0.2, 0.2, 0.8, 0.8))
+    rev = {
+        "defeitos": {
+            "1": {
+                "situacao": "falso_positivo",
+                "geometria": contorno,
+                "quando": "2026-11-11T10:00:00",
+            },
+            "2": {"situacao": "confirmado", "quando": "2026-11-11T10:00:01"},
+            "3": {"situacao": "confirmado", "quando": "2026-11-11T10:00:02"},
+        },
+        "adicionados": [{"id": 4, "classe": "panela", "geometria": contorno, "quando": "x"}],
+    }
+    nova, perdidos = revisao.reancorar(rev, antigos, novos, 0.5)
+    assert nova["defeitos"]["2"]["situacao"] == "falso_positivo"  # o antigo 1 (a) agora e o 2
+    assert nova["defeitos"]["2"]["geometria"] == contorno
+    assert nova["defeitos"]["1"]["situacao"] == "confirmado"  # o antigo 2 (b) agora e o 1
+    assert perdidos == ["3"] and nova["sem_par"][0]["id_antigo"] == 3  # c sumiu: nao cai em outro
+    assert nova["adicionados"][0]["id"] == 5  # area manual nao colide com o id novo 4
+
+
+def test_reancorar_junta_duas_revisoes_do_mesmo_defeito():
+    antigos = gpd.GeoDataFrame(
+        {"id": [1, 2]}, geometry=[box(0, 0, 1, 1), box(0, 0, 1, 1.05)], crs=CRS
+    )
+    novos = gpd.GeoDataFrame({"id": [7]}, geometry=[box(0, 0, 1, 1)], crs=CRS)
+    contorno = mapping(box(0.2, 0.2, 0.8, 0.8))
+    rev = {
+        "defeitos": {
+            "1": {"situacao": "confirmado", "geometria": contorno, "quando": "2026-11-11T10:00:00"},
+            "2": {"situacao": "falso_positivo", "quando": "2026-11-12T10:00:00"},
+        },
+        "adicionados": [],
+    }
+    nova, perdidos = revisao.reancorar(rev, antigos, novos, 0.5)
+    assert not perdidos
+    assert nova["defeitos"]["7"]["situacao"] == "falso_positivo"  # vale a mais recente
+    assert nova["defeitos"]["7"]["geometria"] == contorno  # e o contorno corrigido fica
+
+
+def test_reprocessar_mantem_a_revisao_no_mesmo_defeito(tmp_path):
+    import warnings
+
+    from paviscan import pipeline, sintetico
+
+    cena = sintetico.gerar_cena(
+        tmp_path / "cena", n_buracos=4, gsd=0.03, comprimento_m=24.0, seed=3
+    )
+    run = tmp_path / "run"
+    pipeline.processar(cena / "orto.tif", cena / "pista.geojson", run)
+    det = gpd.read_file(run / "defeitos.geojson")
+    alvo = det.sort_values("area_m2").iloc[-1]
+    # simula a numeracao de um processamento anterior: ids ao contrario
+    n = len(det)
+    det["id"] = n + 1 - det["id"]
+    det.to_file(run / "defeitos.geojson", driver="GeoJSON")
+    id_antigo = n + 1 - int(alvo["id"])
+    marca = {"situacao": "falso_positivo", "quando": "x"}
+    revisao.gravar(run, {"defeitos": {str(id_antigo): marca},
+                         "adicionados": []})  # fmt: skip
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        pipeline.processar(cena / "orto.tif", cena / "pista.geojson", run)
+    rev = revisao.carregar(run)
+    assert list(rev["defeitos"]) == [str(int(alvo["id"]))]  # voltou para o defeito certo
+    # imagem trocada: a revisao antiga e guardada e a nova comeca vazia
+    resumo = json.loads((run / "resumo.json").read_text())
+    resumo["ortofoto_caminho"] = "/outra/imagem.tif"
+    (run / "resumo.json").write_text(json.dumps(resumo))
+    with pytest.warns(UserWarning, match="ortofoto diferente"):
+        pipeline.processar(cena / "orto.tif", cena / "pista.geojson", run)
+    assert not revisao.caminho(run).exists() and len(list(run.glob("revisao_*.json"))) == 1
+
+
+def test_reprocessar_sem_deteccao_com_area_manual(tmp_path):
+    """O defeitos.geojson vazio volta sem a coluna id; reprocessar dava KeyError."""
+    import warnings
+
+    from paviscan import pipeline, sintetico
+
+    cena = sintetico.gerar_cena(
+        tmp_path / "cena", n_buracos=0, gsd=0.03, comprimento_m=24.0, seed=4
+    )
+    run = tmp_path / "run"
+    pipeline.processar(cena / "orto.tif", cena / "pista.geojson", run)
+    assert len(gpd.read_file(run / "defeitos.geojson")) == 0
+    seg = gpd.read_file(run / "segmentos.geojson")
+    c = seg.geometry.iloc[0].centroid
+    revisao.adicionar(run, [mapping(box(c.x, c.y, c.x + 0.5, c.y + 0.5))], "panela", 1)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        pipeline.processar(cena / "orto.tif", cena / "pista.geojson", run)
+    rev = revisao.carregar(run)
+    assert [a["id"] for a in rev["adicionados"]] == [1] and not rev["defeitos"]
+
+
+def test_falha_no_meio_do_reprocessamento_nao_desalinha_a_revisao(tmp_path, monkeypatch):
+    """A revisao nova so vai para o disco depois do defeitos.geojson novo."""
+    import warnings
+
+    from paviscan import orcamento, pipeline, sintetico
+
+    cena = sintetico.gerar_cena(
+        tmp_path / "cena", n_buracos=4, gsd=0.03, comprimento_m=24.0, seed=3
+    )
+    run = tmp_path / "run"
+    pipeline.processar(cena / "orto.tif", cena / "pista.geojson", run)
+    det = gpd.read_file(run / "defeitos.geojson")
+    n = len(det)
+    det["id"] = n + 1 - det["id"]  # numeracao de um processamento anterior
+    det.to_file(run / "defeitos.geojson", driver="GeoJSON")
+    revisao.gravar(run, {"defeitos": {"1": {"situacao": "falso_positivo", "quando": "x"}},
+                         "adicionados": []})  # fmt: skip
+    antes = revisao.caminho(run).read_text()
+
+    def quebra(*a, **k):
+        raise RuntimeError("falha simulada no orcamento")
+
+    monkeypatch.setattr(orcamento, "orcar", quebra)
+    with warnings.catch_warnings(), pytest.raises(RuntimeError, match="simulada"):
+        warnings.simplefilter("ignore")
+        pipeline.processar(cena / "orto.tif", cena / "pista.geojson", run)
+    assert revisao.caminho(run).read_text() == antes  # continua casando com o geojson antigo
+    assert list(gpd.read_file(run / "defeitos.geojson")["id"]) == list(det["id"])
+
+
+def test_falha_ao_gravar_a_planilha_nao_desalinha_a_revisao(tmp_path, monkeypatch):
+    """Planilha aberta no Excel trava a gravacao; o defeitos.geojson novo nao pode ir antes."""
+    import warnings
+
+    from paviscan import exportar, pipeline, sintetico
+
+    cena = sintetico.gerar_cena(
+        tmp_path / "cena", n_buracos=4, gsd=0.03, comprimento_m=24.0, seed=3
+    )
+    run = tmp_path / "run"
+    pipeline.processar(cena / "orto.tif", cena / "pista.geojson", run)
+    det = gpd.read_file(run / "defeitos.geojson")
+    det["id"] = len(det) + 1 - det["id"]  # numeracao de um processamento anterior
+    det.to_file(run / "defeitos.geojson", driver="GeoJSON")
+    revisao.gravar(run, {"defeitos": {"1": {"situacao": "falso_positivo", "quando": "x"}},
+                         "adicionados": []})  # fmt: skip
+    antes = revisao.caminho(run).read_text()
+
+    def trava(*a, **k):
+        raise PermissionError("resumo.xlsx aberto em outro programa")
+
+    monkeypatch.setattr(exportar, "gravar_xlsx", trava)
+    with warnings.catch_warnings(), pytest.raises(PermissionError):
+        warnings.simplefilter("ignore")
+        pipeline.processar(cena / "orto.tif", cena / "pista.geojson", run)
+    assert revisao.caminho(run).read_text() == antes
+    assert list(gpd.read_file(run / "defeitos.geojson")["id"]) == list(det["id"])

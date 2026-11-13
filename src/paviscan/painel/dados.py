@@ -272,6 +272,40 @@ def condicao_geral(defeitos: gpd.GeoDataFrame, segmentos: gpd.GeoDataFrame, cfg:
     return {"indice": nota, "conceito": conceito(nota, cfg)}
 
 
+def recorte_relatorio(
+    defeitos: gpd.GeoDataFrame,
+    segmentos: gpd.GeoDataFrame,
+    vias: list[str] | None = None,
+    seg_de: int | None = None,
+    seg_ate: int | None = None,
+    severidades: list[str] | None = None,
+    classes: list[str] | None = None,
+    so_conferidos: bool = False,
+    fora: list[int] | tuple = (),
+) -> tuple[gpd.GeoDataFrame, gpd.GeoDataFrame]:
+    """Defeitos e segmentos que entram no relatorio. None = nao filtra.
+
+    A area (vias e faixa de segmentos) define os segmentos, que sao o denominador dos
+    indicadores; os defeitos sao os desses segmentos que passam nos filtros. `so_conferidos`:
+    so confirmados na revisao e adicionados a mao. `fora`: ids tirados um a um.
+    """
+    s = filtrar_segmentos(segmentos, vias=vias)
+    if seg_de is not None:
+        s = s[s["segmento"] >= int(seg_de)]
+    if seg_ate is not None:
+        s = s[s["segmento"] <= int(seg_ate)]
+    d = defeitos[defeitos["segmento"].isin(s["segmento"])]
+    if severidades is not None:
+        d = d[d["severidade"].isin(list(severidades))]
+    if classes is not None and "classe" in d.columns:
+        d = d[d["classe"].isin(list(classes))]
+    if so_conferidos and "revisao" in d.columns:
+        d = d[d["revisao"].isin(["confirmado", "manual"])]
+    if len(fora):
+        d = d[~d["id"].isin([int(i) for i in fora])]
+    return d, s
+
+
 def area_e_extensao(segmentos: gpd.GeoDataFrame) -> dict:
     """Area de pista e extensao cobertas pelos segmentos (para o cabecalho do painel)."""
     return {
@@ -304,7 +338,7 @@ def tabela(defeitos: gpd.GeoDataFrame) -> pd.DataFrame:
     """Buracos sem geometria, colunas na ordem de exibicao."""
     ordem = [
         "id", "revisao", "classe", "severidade", "area_m2", "largura_m", "comprimento_m",
-        "confianca",
+        "caixa_ao_longo_m", "caixa_transversal_m", "confianca",
         "via", "segmento", "na_emenda", "lat", "lon", "x", "y",
     ]  # fmt: skip
     return pd.DataFrame(defeitos[[c for c in ordem if c in defeitos.columns]])

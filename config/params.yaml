@@ -48,6 +48,11 @@ severidade:                 # por area do buraco, em m2. Faixas de trabalho, nao
   media_a_partir_de: 0.25
   alta_a_partir_de: 1.0
 
+contorno:                   # contorno do defeito com menos vertices; a area medida nos pixels fica
+  tolerancia_min_m: 0.03    # simplificacao minima: tira o serrilhado dos pixels
+  tolerancia_rel: 0.03      # mais esta fracao do lado equivalente (raiz da area), em defeito grande
+  variacao_area_max: 0.2    # parte cuja area mudaria mais que isso (forma fina) fica so sem o serrilhado
+
 segmentos:
   comprimento_m: 20
   resto_min_m: 5            # sobra menor que isto no fim do trecho entra no ultimo segmento
@@ -118,6 +123,11 @@ condicao:                   # indice de condicao de 0 a 100. E de trabalho: nao 
   peso_densidade: 1.0       # pontos perdidos por defeito a cada 100 m
   so_area: [solo_exposto]   # classes extensas contam so pela area: seus pedacos nao entram na densidade
   conceitos: {A: 85, B: 70, C: 50, D: 30}   # nota minima de cada conceito; abaixo de D e E
+
+revisao:                    # editor de contorno da aba Inspecao
+  vertices_max: 30          # contorno e simplificado ate este numero de vertices para editar
+  janela_px: 1200           # lado maximo da imagem em resolucao cheia mostrada no editor
+  reancorar_iou_min: 0.5    # ao reprocessar, a revisao passa ao defeito novo com esta sobreposicao
 
 acervo:
   pasta_imagens: dados      # ortofotos enviadas pelo painel: uma pasta por imagem (orto.tif, pista, eixo)

@@ -273,3 +273,111 @@ def test_buraco_em_via_de_terra_e_detectado_e_nao_ha_revestimento_perdido(tmp_pa
     pista_osm.gerar(limpa / "orto.tif", limpa / "pista.geojson", eixo=limpa / "eixo.geojson")
     saida = pipeline.processar(limpa / "orto.tif", limpa / "pista.geojson", tmp_path / "run2")
     assert len(gpd.read_file(saida / "defeitos.geojson")) == 0
+
+
+def test_editor_de_contorno_monta_nos_dois_modos(dois_runs):
+    """O mapa do editor (folium + script de edicao direta) e montado no Python sem erro."""
+    at = _app(dois_runs).run()
+    at.session_state["aba"] = "Inspeção"
+    at.run()
+    for modo in ("Corrigir contorno", "Adicionar área que faltou"):
+        next(r for r in at.radio if "Triagem rápida" in r.options).set_value(modo).run()
+        assert not at.exception, (modo, at.exception)
+
+
+def test_relatorio_sai_so_com_a_area_e_os_defeitos_escolhidos(dois_runs):
+    import cv2
+    import numpy as np
+
+    run = dois_runs / "beta"
+    det, seg, resumo = dados.carregar(run)
+    params = dados.parametros()
+    det = revisao.aplicar(det, seg, revisao.carregar(run), params["severidade"])
+    assert {"angulo_via", "caixa_ao_longo_m", "caixa_transversal_m"} <= set(det.columns)
+    um = int(det.sort_values("area_m2")["id"].iloc[-1])
+    d, s = dados.recorte_relatorio(det, seg, fora=[um])
+    pagina = relatorio.gerar_html(run, d, s, resumo, params, None, "1 defeito retirado à mão.")
+    assert "Recorte deste relatório" in pagina and f"#{um} ·" not in pagina
+    jpg = relatorio.mapa_estatico(run, d, resumo, segmentos=s)
+    assert cv2.imdecode(np.frombuffer(jpg, np.uint8), cv2.IMREAD_COLOR) is not None
+    # pela tela: o menu aparece, e o relatorio gerado e o do recorte
+    at = _app(dois_runs).run()
+    at.session_state["aba"] = "Dados e relatório"
+    at.run()
+    assert not at.exception, at.exception
+    assert any("Entram" in c.value for c in at.caption)
+    sev = next(m for m in at.multiselect if m.label == "Severidade")
+    sev.set_value(["alta"]).run()
+    next(b for b in at.button if b.label == "Gerar relatório").click().run()
+    assert not at.exception, at.exception
+    assinatura, html_rel = at.session_state["relatorio"]
+    assert "severidade alta" in html_rel.decode("utf-8")
+
+
+def test_mapa_do_relatorio_aceita_segmento_com_sobra_de_linha(dois_runs):
+    """No Novo Aleixo um segmento e GeometryCollection (poligono + linha) e o relatorio quebrava."""
+    import cv2
+    import numpy as np
+    from shapely.geometry import GeometryCollection, LineString
+
+    run = dois_runs / "alfa"
+    det, seg, resumo = dados.carregar(run)
+    params = dados.parametros()
+    det = revisao.aplicar(det, seg, revisao.carregar(run), params["severidade"])
+    seg = seg.copy()
+    g = seg.geometry.iloc[0]
+    x0, y0, _, _ = g.bounds
+    sobra = LineString([(x0, y0), (x0 - 1, y0)])
+    seg.loc[seg.index[0], "geometry"] = GeometryCollection([g, sobra])
+    jpg = relatorio.mapa_estatico(run, det, resumo, segmentos=seg)
+    assert cv2.imdecode(np.frombuffer(jpg, np.uint8), cv2.IMREAD_COLOR) is not None
+    assert "Onde estão os defeitos" in relatorio.gerar_html(run, det, seg, resumo, params, None)
+
+
+def test_menu_do_relatorio_lembra_a_escolha_ao_trocar_de_secao(dois_runs):
+    at = _app(dois_runs).run()
+    at.session_state["aba"] = "Dados e relatório"
+    at.run()
+    next(m for m in at.multiselect if m.label == "Severidade").set_value(["alta"]).run()
+    fora = next(m for m in at.multiselect if m.label == "Tirar defeitos específicos")
+    um = fora.options[0] if fora.options else None
+    if um is not None:
+        fora.set_value([fora.options[0]]).run()
+    at.session_state["aba"] = "Orçamento"
+    at.run()
+    at.session_state["aba"] = "Dados e relatório"
+    at.run()
+    assert not at.exception, at.exception
+    assert next(m for m in at.multiselect if m.label == "Severidade").value == ["alta"]
+    if um is not None:
+        assert (
+            len(next(m for m in at.multiselect if m.label == "Tirar defeitos específicos").value)
+            == 1
+        )
+
+
+def test_menu_do_relatorio_volta_a_area_inteira_ao_escolher_todas_as_vias(tmp_path):
+    """Escolher uma via e depois todas de novo deixava a faixa presa nos segmentos da primeira."""
+    import geopandas as gpd
+
+    cena = sintetico.gerar_cena(
+        tmp_path / "cena", n_buracos=3, gsd=0.03, comprimento_m=60.0, seed=8
+    )
+    run = tmp_path / "runs" / "duas_vias"
+    pipeline.processar(cena / "orto.tif", cena / "pista.geojson", run)
+    for arq in ("segmentos.geojson", "defeitos.geojson"):  # o trecho vira duas vias
+        g = gpd.read_file(run / arq)
+        g["via"] = ["Rua A" if s == 0 else "Rua B" for s in g["segmento"]]
+        g.to_file(run / arq, driver="GeoJSON")
+    n_seg = len(gpd.read_file(run / "segmentos.geojson"))
+    assert n_seg >= 3
+    at = _app(tmp_path / "runs").run()
+    at.session_state["aba"] = "Dados e relatório"
+    at.run()
+    vias = next(m for m in at.multiselect if m.label == "Vias")
+    vias.set_value(["Rua B"]).run()
+    next(m for m in at.multiselect if m.label == "Vias").set_value(["Rua A", "Rua B"]).run()
+    assert not at.exception, at.exception
+    faixa = next(s for s in at.select_slider if s.label.startswith("Segmentos"))
+    assert tuple(faixa.value) == (0, n_seg - 1)
+    assert any(f"em **{n_seg}** segmento" in c.value for c in at.caption)

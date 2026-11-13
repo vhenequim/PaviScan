@@ -15,7 +15,7 @@ from rasterio.vrt import WarpedVRT
 from rasterio.windows import Window, from_bounds
 from rasterio.windows import transform as transform_da_janela
 
-from . import ingestao
+from . import geometria, ingestao
 
 
 def gravar_geojson(gdf: gpd.GeoDataFrame, caminho: Path) -> None:
@@ -66,8 +66,11 @@ def previa(
     return [[b.bottom, b.left], [b.top, b.right]]
 
 
-def recorte(ds, geom, destino: Path, cfg: dict, escala: float = 1.0) -> bool:
-    """Grava em `destino` a miniatura de um defeito, com o contorno desenhado."""
+def recorte(ds, geom, destino: Path, cfg: dict, escala: float = 1.0, caixa=None) -> bool:
+    """Grava em `destino` a miniatura de um defeito, com o contorno desenhado.
+
+    `caixa`: retangulo paralelo a via em volta do defeito, desenhado em amarelo.
+    """
     tudo = Window(0, 0, ds.width, ds.height)
     x0, y0, x1, y1 = geom.bounds
     lado = max(x1 - x0, y1 - y0) + 2 * cfg["margem_m"]
@@ -84,7 +87,10 @@ def recorte(ds, geom, destino: Path, cfg: dict, escala: float = 1.0) -> bool:
     )
     img = np.ascontiguousarray(np.moveaxis(ingestao.para_uint8(img, escala), 0, -1))
     inv = ~(transform_da_janela(jan, ds.transform) @ rasterio.Affine.scale(1 / fator))
-    for parte in geom.geoms if hasattr(geom, "geoms") else [geom]:
+    if caixa is not None and not caixa.is_empty:
+        pts = np.array([inv @ xy for xy in caixa.exterior.coords]).round().astype(np.int32)
+        cv2.polylines(img, [pts], True, (255, 214, 10), 2, cv2.LINE_AA)
+    for parte in geometria.poligonos(geom):
         pts = np.array([inv @ xy for xy in parte.exterior.coords]).round().astype(np.int32)
         cv2.polylines(img, [pts], True, (255, 40, 40), 1, cv2.LINE_AA)
     cv2.imwrite(str(destino), cv2.cvtColor(img, cv2.COLOR_RGB2BGR), [cv2.IMWRITE_JPEG_QUALITY, 88])
@@ -100,8 +106,9 @@ def recortes(ds, defeitos: gpd.GeoDataFrame, saida: Path, cfg: dict, escala: flo
     if defeitos.empty:
         return 0
     escolhidos = defeitos.sort_values("area_m2", ascending=False).head(int(cfg["maximo"]))
-    for ident, geom in zip(escolhidos["id"], escolhidos.geometry, strict=True):
-        recorte(ds, geom, pasta / f"{int(ident)}.jpg", cfg, escala)
+    rets = geometria.caixas_de(escolhidos)
+    for ident, geom, caixa in zip(escolhidos["id"], escolhidos.geometry, rets, strict=True):
+        recorte(ds, geom, pasta / f"{int(ident)}.jpg", cfg, escala, caixa)
     return len(escolhidos)
 
 
@@ -125,8 +132,13 @@ def gravar_xlsx(abas: dict, destino) -> None:
 
 
 def gravar(saida: Path, defeitos: gpd.GeoDataFrame, segmentos: gpd.GeoDataFrame, resumo: dict):
-    """defeitos.geojson, segmentos.geojson, resumo.json, defeitos.gpkg e resumo.xlsx."""
-    gravar_geojson(defeitos, saida / "defeitos.geojson")
+    """segmentos.geojson, resumo.json, defeitos.gpkg, resumo.xlsx e, por ultimo, defeitos.geojson.
+
+    O `defeitos.geojson` vai por ultimo porque a revisao manual (`revisao.json`) e casada
+    com ele pelo id: o pipeline grava a revisao renumerada logo depois. Se algo falhar
+    antes (planilha aberta no Excel, gpkg aberto no QGIS), os dois continuam na numeracao
+    antiga, coerentes entre si.
+    """
     gravar_geojson(segmentos, saida / "segmentos.geojson")
     (saida / "resumo.json").write_text(json.dumps(resumo, indent=2, ensure_ascii=False))
     gpkg = saida / "defeitos.gpkg"
@@ -135,3 +147,4 @@ def gravar(saida: Path, defeitos: gpd.GeoDataFrame, segmentos: gpd.GeoDataFrame,
     if len(defeitos):
         defeitos.to_file(gpkg, layer="defeitos", driver="GPKG")
     gravar_xlsx(planilha(defeitos, segmentos, resumo), saida / "resumo.xlsx")
+    gravar_geojson(defeitos, saida / "defeitos.geojson")

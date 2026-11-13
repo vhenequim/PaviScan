@@ -24,11 +24,12 @@ import geopandas as gpd
 import numpy as np
 import pandas as pd
 from pyproj import Transformer
+from shapely import STRtree
 from shapely.geometry import mapping, shape
 from shapely.geometry.base import BaseGeometry
 from shapely.ops import unary_union
 
-from . import exportar, geometria, ingestao
+from . import exportar, geometria, ingestao, pista
 
 SITUACOES = ["pendente", "confirmado", "falso_positivo", "manual"]
 
@@ -43,7 +44,68 @@ def carregar(run: Path) -> dict:
     if not arq.is_file():
         return {"defeitos": {}, "adicionados": []}
     rev = json.loads(arq.read_text())
-    return {"defeitos": rev.get("defeitos", {}), "adicionados": rev.get("adicionados", [])}
+    saida = {"defeitos": rev.get("defeitos", {}), "adicionados": rev.get("adicionados", [])}
+    if rev.get("sem_par"):  # revisoes que nao acharam defeito ao reprocessar (ver reancorar)
+        saida["sem_par"] = rev["sem_par"]
+    return saida
+
+
+def _juntar(a: dict, b: dict) -> dict:
+    """Duas revisoes do mesmo defeito: vale a situacao da mais recente; o contorno corrigido
+    de uma delas fica se a mais recente nao tiver contorno."""
+    nova, velha = (a, b) if a.get("quando", "") >= b.get("quando", "") else (b, a)
+    junto = dict(nova)
+    if not junto.get("geometria") and velha.get("geometria"):
+        junto["geometria"] = velha["geometria"]
+    return junto
+
+
+def reancorar(
+    rev: dict, antigos: gpd.GeoDataFrame, novos: gpd.GeoDataFrame, iou_min: float
+) -> tuple[dict, list[str]]:
+    """Leva a revisao feita sobre `antigos` para os ids de `novos`.
+
+    Reprocessar a imagem renumera os defeitos, e a revisao e guardada por id. Cada id
+    revisado passa para o defeito novo que mais se sobrepoe ao antigo (IoU >= `iou_min`,
+    comparando os contornos do detector). Revisao sem par sai de `defeitos` e vai para
+    `sem_par`, com a geometria antiga, em vez de cair em outro defeito. Area manual que
+    colidir com id novo ganha id acima do maior. Devolve (revisao nova, ids sem par).
+    """
+    # processamento anterior sem deteccao: o geojson vazio volta sem a coluna `id`
+    tem_ids = len(antigos) and "id" in antigos.columns
+    por_id = dict(zip(antigos["id"].astype(int), antigos.geometry, strict=True)) if tem_ids else {}
+    ids_novos = novos["id"].astype(int).to_numpy() if len(novos) else np.zeros(0, dtype=int)
+    arvore = STRtree(np.asarray(novos.geometry.values)) if len(novos) else None
+    defeitos: dict[str, dict] = {}
+    sem_par = list(rev.get("sem_par", []))
+    perdidos = []
+    for ident, item in rev.get("defeitos", {}).items():
+        velho = por_id.get(int(ident))
+        melhor, iou_melhor = None, 0.0
+        if velho is not None and arvore is not None:
+            for k in arvore.query(velho, predicate="intersects"):
+                g = novos.geometry.iloc[int(k)]
+                iou = velho.intersection(g).area / max(velho.union(g).area, 1e-12)
+                if iou > iou_melhor:
+                    melhor, iou_melhor = str(int(ids_novos[int(k)])), iou
+        if melhor is None or iou_melhor < iou_min:
+            perdidos.append(ident)
+            antes = mapping(velho) if velho is not None else None
+            sem_par.append({"id_antigo": int(ident), **item, "contorno_detector": antes})
+            continue
+        defeitos[melhor] = _juntar(defeitos[melhor], item) if melhor in defeitos else item
+    teto = int(ids_novos.max()) if len(ids_novos) else 0
+    adicionados = []
+    for area in sorted(rev.get("adicionados", []), key=lambda a: int(a["id"])):
+        area = dict(area)
+        if int(area["id"]) <= teto:
+            area["id"] = teto + 1
+        teto = max(teto, int(area["id"]))
+        adicionados.append(area)
+    saida = {"defeitos": defeitos, "adicionados": adicionados}
+    if sem_par:
+        saida["sem_par"] = sem_par
+    return saida, perdidos
 
 
 def gravar(run: Path, rev: dict) -> None:
@@ -221,7 +283,8 @@ def aplicar(
         d = gpd.GeoDataFrame(
             pd.concat([d, extra], ignore_index=True)[colunas], geometry="geometry", crs=crs
         )
-    return d
+    # caixa paralela a via: refeita para todos (contorno corrigido, area manual, run antigo)
+    return geometria.com_caixa(d, pista.angulos(segmentos))
 
 
 def contagem(defeitos: gpd.GeoDataFrame) -> dict[str, int]:
@@ -234,13 +297,37 @@ def contagem(defeitos: gpd.GeoDataFrame) -> dict[str, int]:
     return c
 
 
-def recorte_do_defeito(run: Path, orto: Path, ident: int, geom: BaseGeometry, params: dict) -> None:
+def recorte_do_defeito(
+    run: Path, orto: Path, ident: int, geom: BaseGeometry, params: dict, caixa=None
+) -> None:
     """Refaz a miniatura de um defeito com o contorno revisado: recortes/rev_<id>.jpg."""
     pasta = Path(run) / "recortes"
     pasta.mkdir(exist_ok=True)
     with ingestao.abrir(orto) as ds:
         escala = ingestao.escala_uint8(ds, params["raster"])
-        exportar.recorte(ds, geom, pasta / f"rev_{int(ident)}.jpg", params["recortes"], escala)
+        destino = pasta / f"rev_{int(ident)}.jpg"
+        exportar.recorte(ds, geom, destino, params["recortes"], escala, caixa)
+
+
+def para_edicao(geom: BaseGeometry, vertices_max: int) -> BaseGeometry:
+    """Contorno com no maximo cerca de `vertices_max` vertices, para arrastar na tela.
+
+    O contorno do detector acompanha a borda pixel a pixel e chega a mais de mil
+    vertices; cada um vira um ponto arrastavel no editor, e o mapa trava. Simplifica
+    aos poucos (tolerancia de 1 cm, crescendo ate 5 m no maximo) ate caber. Os furos
+    internos continuam na geometria, mas o editor desenha so o contorno externo.
+    """
+
+    def n_vertices(g: BaseGeometry) -> int:
+        return sum(len(p.exterior.coords) for p in getattr(g, "geoms", [g]))
+
+    atual, tolerancia = geom, 0.01
+    while n_vertices(atual) > vertices_max and tolerancia < 5.0:
+        simples = geom.simplify(tolerancia)
+        if not simples.is_empty:
+            atual = simples
+        tolerancia *= 1.5
+    return atual
 
 
 def janela_de_edicao(orto: Path, limites, lado_px: int, raster_cfg: dict):

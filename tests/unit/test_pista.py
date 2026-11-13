@@ -105,3 +105,13 @@ def test_sobra_pequena_entra_no_ultimo_segmento():
     assert abs(seg["area_pista_m2"].sum() - 62 * 7) < 1e-3
     seg = pista.segmentar(_pista(box(0, 0, 68, 7)), 20, resto_min_m=5)
     assert list(seg["comprimento_m"]) == [20, 20, 20, 8]
+
+
+def test_segmento_guarda_a_direcao_da_via_e_run_antigo_recalcula():
+    horizontal, vertical = box(0, 0, 60, 7), box(100, 0, 107, 60)
+    seg = pista.segmentar(_pista(horizontal, vertical), 20)
+    ang = pista.angulos(seg)
+    assert all(abs(ang[s]) < 1e-6 for s in seg.loc[seg["trecho"] == 0, "segmento"])
+    assert all(abs(abs(ang[s]) - 90) < 1e-6 for s in seg.loc[seg["trecho"] == 1, "segmento"])
+    antigo = pista.angulos(seg.drop(columns="angulo_via"))  # levantamento gravado antes da coluna
+    assert antigo == ang

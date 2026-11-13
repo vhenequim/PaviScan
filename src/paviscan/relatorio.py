@@ -11,7 +11,7 @@ import geopandas as gpd
 import numpy as np
 import pandas as pd
 
-from . import marca
+from . import geometria, marca
 from .painel import dados
 
 COR_SEVERIDADE = {"baixa": (227, 178, 60), "media": (238, 123, 48), "alta": (214, 40, 57)}
@@ -19,27 +19,76 @@ COR_CONCEITO = {"A": "#2E7D32", "B": "#7CB342", "C": "#F9A825", "D": "#EF6C00", 
 
 
 def mapa_estatico(
-    run: Path, defeitos: gpd.GeoDataFrame, resumo: dict, lado_px: int = 1500
+    run: Path,
+    defeitos: gpd.GeoDataFrame,
+    resumo: dict,
+    lado_px: int = 1500,
+    segmentos: gpd.GeoDataFrame | None = None,
 ) -> bytes:
-    """JPEG da ortofoto com um anel por defeito, colorido pela severidade."""
+    """JPEG da ortofoto com a caixa de cada defeito (retangulo paralelo a via), pela severidade.
+
+    Com `segmentos`, a imagem e recortada na area deles e o contorno de cada um aparece em
+    branco. Caixa pequena demais para enxergar na escala do mapa e aumentada ate ~10 px.
+    """
     img = cv2.imread(str(Path(run) / "previa.png"), cv2.IMREAD_UNCHANGED)
     if img is None:
         return b""
-    h, w = img.shape[:2]
     if img.shape[2] == 4:  # fundo branco onde nao ha dado
         alfa = img[..., 3:4].astype(np.float32) / 255.0
         img = (img[..., :3].astype(np.float32) * alfa + 255.0 * (1 - alfa)).astype(np.uint8)
-    f = min(1.0, lado_px / max(h, w))
-    img = cv2.resize(img, (max(1, int(w * f)), max(1, int(h * f))), interpolation=cv2.INTER_AREA)
     (lat_s, lon_o), (lat_n, lon_l) = resumo["previa_limites"]
+    h0, w0 = img.shape[:2]
+
+    def na_previa(lon, lat):
+        return (
+            (np.asarray(lon) - lon_o) / (lon_l - lon_o) * w0,
+            (lat_n - np.asarray(lat)) / (lat_n - lat_s) * h0,
+        )
+
+    x0, y0 = 0, 0
+    tem_seg = segmentos is not None and len(segmentos)
+    if tem_seg:  # recorta na area escolhida, com folga
+        oeste, sul, leste, norte = segmentos.to_crs(4326).total_bounds
+        (xa, xb), (yb, ya) = na_previa([oeste, leste], [sul, norte])
+        folga = 0.05 * max(xb - xa, yb - ya) + 15
+        x0, y0 = max(0, int(xa - folga)), max(0, int(ya - folga))
+        x1, y1 = min(w0, int(xb + folga) + 1), min(h0, int(yb + folga) + 1)
+        if x1 - x0 >= 8 and y1 - y0 >= 8:
+            img = img[y0:y1, x0:x1]
+        else:
+            x0, y0 = 0, 0
+    h, w = img.shape[:2]
+    f = min(4.0, lado_px / max(h, w))  # area pequena: amplia (ate 4x) para caber na pagina
+    img = cv2.resize(
+        img, (max(1, int(w * f)), max(1, int(h * f))),
+        interpolation=cv2.INTER_AREA if f < 1 else cv2.INTER_CUBIC,
+    )  # fmt: skip
+
+    def para_px(geom) -> np.ndarray:
+        xy = np.asarray(geom.exterior.coords)
+        px, py = na_previa(xy[:, 0], xy[:, 1])
+        return np.stack([(px - x0) * f, (py - y0) * f], axis=1)
+
+    if tem_seg:  # segmento pode ser GeometryCollection com sobra de linha: so os poligonos
+        for g in segmentos.to_crs(4326).geometry:
+            for p in geometria.poligonos(g):
+                pts = para_px(p).round().astype(np.int32)
+                cv2.polylines(img, [pts], True, (245, 245, 245), 1, cv2.LINE_AA)
     if len(defeitos):
         d = defeitos.sort_values("area_m2")  # os maiores por cima
-        for lon, lat, sev in zip(d["lon"], d["lat"], d["severidade"], strict=True):
-            x = int((lon - lon_o) / (lon_l - lon_o) * img.shape[1])
-            y = int((lat_n - lat) / (lat_n - lat_s) * img.shape[0])
+        rets = geometria.caixas_de(d).to_crs(4326)
+        for ret, sev in zip(rets, d["severidade"], strict=True):
+            if ret is None or ret.is_empty:
+                continue
+            pts = para_px(ret)
+            lado = max(np.hypot(*(pts[1] - pts[0])), np.hypot(*(pts[2] - pts[1])))
+            if lado < 10:  # visivel na escala do mapa
+                c = pts[:4].mean(axis=0)
+                pts = c + (pts - c) * (10 / max(lado, 1e-6))
             r, g, b = COR_SEVERIDADE.get(sev, (255, 255, 255))
-            cv2.circle(img, (x, y), 7, (255, 255, 255), 3, cv2.LINE_AA)
-            cv2.circle(img, (x, y), 7, (b, g, r), 2, cv2.LINE_AA)
+            pts = pts.round().astype(np.int32)
+            cv2.polylines(img, [pts], True, (255, 255, 255), 3, cv2.LINE_AA)
+            cv2.polylines(img, [pts], True, (b, g, r), 2, cv2.LINE_AA)
     ok, buf = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 85])
     return buf.tobytes() if ok else b""
 
@@ -106,10 +155,13 @@ def gerar_html(
     resumo: dict,
     params: dict,
     orcamento: dict | None = None,
+    escopo: str | None = None,
 ) -> str:
     """Relatorio do recorte dado (defeitos ja filtrados). `orcamento`: saida de `painel` (opcional).
 
     `orcamento` = {"total": {...}, "por_servico": DataFrame, "placeholder": bool, "bdi": float}.
+    `escopo`: frase que descreve o recorte escolhido (vias, segmentos, defeitos), no topo.
+    O mapa mostra so a area dos `segmentos` dados.
     """
     run = Path(run)
     fonte = resumo.get("fonte") or {}
@@ -148,11 +200,14 @@ def gerar_html(
         )
         + "</div>"
     )
-    mapa = mapa_estatico(run, defeitos, resumo)
+    if escopo:
+        p.append(f"<p class='nota'><b>Recorte deste relatório:</b> {html.escape(escopo)}</p>")
+    mapa = mapa_estatico(run, defeitos, resumo, segmentos=segmentos)
     if mapa:
         p.append(f"<h2>Onde estão os defeitos</h2><img class='mapa' src='{_img(mapa)}'>")
         p.append(
-            "<p class='nota'>Um anel por defeito: amarelo (severidade baixa), laranja (média), vermelho (alta).</p>"
+            "<p class='nota'>Cada defeito dentro de um retângulo paralelo à via: amarelo (severidade baixa), "
+            "laranja (média), vermelho (alta). Em branco, os segmentos analisados.</p>"
         )
     if len(vias):
         p.append("<h2>Condição por via</h2>")
@@ -215,8 +270,13 @@ def gerar_html(
     for d in maiores.itertuples():
         arq = dados.recorte(run, d.id)
         if arq is not None:
+            caixa = (
+                f" · retângulo {dados.fmt(d.caixa_ao_longo_m)} × {dados.fmt(d.caixa_transversal_m)} m"
+                if hasattr(d, "caixa_ao_longo_m")
+                else ""
+            )
             figs.append(
-                f"<figure><img src='{_img(arq.read_bytes())}'><figcaption>#{int(d.id)} · {dados.fmt(d.area_m2)} m² · "
+                f"<figure><img src='{_img(arq.read_bytes())}'><figcaption>#{int(d.id)} · {dados.fmt(d.area_m2)} m²{caixa} · "
                 f"{html.escape(dados.ROTULO_CLASSE.get(d.classe, d.classe))} · {html.escape(str(d.via))}</figcaption></figure>"
             )
     if figs:

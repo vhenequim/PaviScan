@@ -105,6 +105,7 @@ def segmentar(
     linhas = []
     for trecho, (nome, pol) in enumerate(zip(pista["nome"], pista.geometry, strict=True)):
         d, n = _eixo(pol)
+        angulo = round(math.degrees(math.atan2(d[1], d[0])), 2)
         pts = np.asarray(pol.convex_hull.exterior.coords)
         s, t = pts @ d, pts @ n
         s0, s1 = s.min(), s.max()
@@ -131,7 +132,36 @@ def segmentar(
                     "ordem": k,
                     "comprimento_m": round(extensao, 2),
                     "area_pista_m2": round(parte.area, 3),
+                    "angulo_via": angulo,
                     "geometry": parte,
                 }
             )
     return gpd.GeoDataFrame(linhas, geometry="geometry", crs=pista.crs)
+
+
+def angulos(segmentos: gpd.GeoDataFrame) -> dict[int, float]:
+    """Direcao da via em cada segmento: graus a partir do eixo x do SRC, anti-horario.
+
+    Levantamento gravado antes da coluna `angulo_via`: recalcula pelo eixo maior do
+    trecho inteiro (o mesmo que `segmentar` usou), ou do proprio segmento sem `trecho`.
+    """
+    if segmentos.empty:
+        return {}
+    if "angulo_via" in segmentos.columns:
+        return dict(
+            zip(
+                segmentos["segmento"].astype(int),
+                segmentos["angulo_via"].astype(float),
+                strict=True,
+            )
+        )
+    if "trecho" in segmentos.columns:
+        chave = segmentos["trecho"]
+    else:  # sem trecho, a via inteira (segmento curto de sobra daria a direcao errada)
+        chave = segmentos["via"] if "via" in segmentos.columns else segmentos["segmento"]
+    saida: dict[int, float] = {}
+    for _, grupo in segmentos.groupby(chave):
+        d, _n = _eixo(unary_union(list(grupo.geometry)))
+        ang = round(math.degrees(math.atan2(d[1], d[0])), 2)
+        saida.update({int(s): ang for s in grupo["segmento"]})
+    return saida

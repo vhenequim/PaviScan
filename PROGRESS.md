@@ -140,7 +140,7 @@ O Uiramutã processa em cerca de 2 min; a geração da pista automática leva ma
 ## Comando único e trabalho em aberto (12/11)
 
 - `./rodar.sh` na raiz: cria o `.venv` e instala as dependências na primeira vez, depois sobe o painel. Documentado no topo do README.
-- Em aberto, sem commit: o usuário reclamou do mapa borrado e do editor de contorno travado. Causas medidas: o mapa mostra uma imagem só de até 4000 px (25 cm/px no Uiramutã contra 3,3 cm nativos) e o contorno do detector chega a mais de mil vértices arrastáveis. Já aplicado na árvore de trabalho, mas sem rodar os testes de novo: orçamento vetorizado, contorno simplificado para editar (`revisao.para_edicao`), recorte do editor em JPEG. `painel/ladrilhos.py` (ortofoto em ladrilhos sob demanda) está escrito e ainda não ligado ao `_mapa`. O usuário mandou parar antes de terminar.
+- O usuário reclamou do mapa borrado e do editor de contorno travado. Causas medidas: o mapa mostra uma imagem só de até 4000 px (25 cm/px no Uiramutã contra 3,3 cm nativos) e o contorno do detector chega a mais de mil vértices arrastáveis. Resolvido em 13/11 (seção abaixo), menos a ortofoto em ladrilhos, que o usuário dispensou.
 
 ## Identidade visual (13/11)
 
@@ -151,6 +151,30 @@ O Uiramutã processa em cerca de 2 min; a geração da pista automática leva ma
 - Carregamento: pseudo-elementos do `stApp` ligados a `data-test-script-state="running"`, com atraso de 0,5 s para clique rápido não piscar. Depende de nomes internos do Streamlit 1.67; se uma versão nova mudar os nomes, o indicador some sem quebrar nada.
 - A primeira onça era uma prévia de banco de imagens com marca d'água e ficou fora do git. No mesmo dia o usuário mandou uma onça autoral: `marca/onca.svg` foi refeito a partir dela, entrou no git e virou também o símbolo do programa (ao lado do nome na barra lateral e ícone da aba, `marca/icone.png`).
 - Correção: sem o arquivo da onça, a versão anterior desenhava um disco cheio por cima do anel, e não "só o anel" como eu tinha escrito. As regras da onça agora só entram no CSS quando o arquivo existe; há teste para isso.
+
+## Retângulo na via, contornos leves, editor e relatório por recorte (13/11)
+
+- O usuário achou aceitável o mapa como está e mandou parar a ortofoto em ladrilhos: `painel/ladrilhos.py` foi apagado sem ser ligado. Ficaram da rodada de 12/11 o orçamento vetorizado (428 ms -> 30 ms por clique no Uiramutã, mesmo resultado do laço) e o recorte do editor em JPEG.
+- Retângulo na via ("caixa"): o menor retângulo com lados paralelo e perpendicular ao eixo da via que envolve o defeito. A direção vem do eixo do trecho (`angulo_via` em `segmentos.geojson`, recalculada para levantamento antigo). Substituiu os anéis no mapa, aparece em amarelo nas miniaturas e no mapa do relatório, e é o corte do remendo no orçamento (mais a folga de 30 cm). Como o retângulo alinhado à via nunca é menor que o retângulo mínimo livre, o plano recomendado subiu: Tarumã 162.498 -> 174.695, Novo Aleixo 97.554 -> 99.026, Uiramutã 299.908 -> 336.516, Querari igual (lá domina o revestimento perdido, orçado pela área).
+- Contorno leve: tolerância de 3 cm ou 3 % do lado equivalente, com a área dos pixels mantida. Vértices no total: Uiramutã 50.549 -> 17.243, Querari 30.867 -> 7.700, Tarumã 29.672 -> 9.800, Novo Aleixo 45.242 -> 10.033; maior contorno de 1.000 a 2.000 para 95 a 213. No editor, até 30 vértices.
+- Editor de contorno: o polígono não podia ser selecionado. Causa: com `edit_options={"edit": True}` o Leaflet.draw 1.0.2 não monta os vértices de polígono que ele não desenhou (erro "reading 'className'"). Agora o contorno abre já editável, cada arraste chega ao Python na hora (sem o "Save" do Leaflet.draw), o vértice tem 10 px (o Leaflet 1.9 se diz de toque em todo navegador e o Leaflet.draw usava 20 px) e o mapa enquadra a imagem. Conferido no navegador com arraste de mouse de verdade; não salvei a correção para não mexer na revisão do usuário.
+- Relatório: menu "O que entra no relatório" (vias, faixa de segmentos, severidade, tipo, só conferidos, tirar por id). Indicadores, orçamento e mapa saem só do recorte, e o topo diz qual foi.
+- Os cinco levantamentos foram reprocessados: mesmos números de defeitos e mesma área.
+- A revisão independente reprovou na primeira passada, por dois motivos:
+  - O relatório do Novo Aleixo quebrava: o segmento 32 é uma GeometryCollection com sobra de linha. Corrigido com `geometria.poligonos`, com teste.
+  - A revisão manual do Novo Aleixo apontava para outros defeitos. Não foi o reprocessamento de hoje, que manteve os ids. As 5 marcações de 11/11 entre 13:16 e 13:20 foram feitas antes do reprocessamento das 13:45 daquele dia, que renumerou os defeitos. O contorno corrigido do 219 estava a 273 m do 219 atual. Reconstruí o levantamento daquele momento com o código do commit 71fd730 (detector 0.5.2) e levei cada marcação pela sobreposição: 219→214, 195→190, 280→274, 22→22, 147→143. Duas coincidiram com as marcações de 12/11 (214 confirmado, 190 falso positivo). Ficou a mais recente, com o contorno corrigido preservado.
+- Para não acontecer de novo, `revisao.reancorar` roda no pipeline. Ao reprocessar a mesma imagem, a revisão segue o defeito por sobreposição (IoU de pelo menos 0,5); o que ficar sem par vai para `sem_par`. Com imagem trocada, a revisão antiga é guardada em arquivo à parte. Num segundo reprocessamento, as revisões do Novo Aleixo e do Uiramutã ficaram nos mesmos defeitos.
+- A segunda passada da revisão independente reprovou o código novo de levar a revisão:
+  - Reprocessar um levantamento sem detecção e com área manual quebrava (o GeoJSON vazio volta sem `id`).
+  - A revisão era gravada na numeração nova antes do `defeitos.geojson` novo. Uma falha no meio deixava os ids desalinhados.
+  - Corrigido, com testes: o pipeline agora só calcula a revisão nova durante o processamento e grava depois de `exportar.gravar`. Imagem trocada também só é guardada à parte nesse momento.
+  - Na terceira passada, a revisão independente achou que uma falha dentro de `exportar.gravar` (planilha aberta no Excel) ainda desalinhava a revisão. Agora o `defeitos.geojson` é o último arquivo gravado, e a revisão vem logo depois.
+  - O menu do relatório prendia a escolha antiga (uma via e depois todas deixava a faixa em 13 de 93 segmentos). Agora "todas" e "faixa inteira" são guardadas como tais.
+- Correções menores da revisão:
+  - O contorno leve trata cada parte de um multipolígono no próprio lugar.
+  - O menu do relatório guarda a escolha ao trocar de aba.
+  - A frase do recorte com seleção vazia sai certa.
+  - A direção da via em levantamento sem `trecho` é calculada por via.
 
 ## Decisões
 - 10/11: escopo reduzido a um retrato de uma imagem. Orçamento e série temporal saíram.
@@ -168,6 +192,10 @@ O Uiramutã processa em cerca de 2 min; a geração da pista automática leva ma
 - 11/11: o usuário aprovou o que entrou além do plano: pista automática pelo OpenStreetMap (`pista_osm.py`), download do OpenAerialMap (`oam.py`), as linhas acrescentadas ao `CLAUDE.md` (comandos, estrutura, `via`, `comprimento_m`, `progresso`) e a exceção de lint I001 em `tests/golden/`.
 
 ## Pendências e dúvidas para o usuário
+- Novo Aleixo, defeito 214:
+  - Ao realinhar a revisão, ficou confirmado com o contorno corrigido de 11/11, de 0,32 m². O contorno do detector é de 6,81 m².
+  - A confirmação de 12/11 foi feita vendo o contorno inteiro.
+  - Se a área certa é a grande, use "Desfazer a revisão desta área" e confirme de novo.
 - Preços reais para `config/precos.csv` (SICRO, SINAPI ou contrato). Sem isso o valor em reais é só ilustração.
 - Decidir se a classe `solo_exposto` fica ligada por padrão em via urbana de asfalto (`classico.solo_exposto`).
 - Conferir no `CLAUDE.md` as linhas que acrescentei nesta rodada (orçamento de volta ao escopo, módulos novos, campos novos).

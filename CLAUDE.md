@@ -87,6 +87,7 @@ class Deteccao:
 - `Deteccao` tem um campo opcional `extensa` (padrão False): região que mede área, não objeto. O pipeline une os pedaços entre janelas e reparte a área pelos segmentos. `defeitos.geojson` tem `classe` (`panela` ou `solo_exposto`) e `na_emenda`.
 - A pista é recortada pela área com dado da ortofoto; pista que não cruza a imagem é `ValueError`.
 - `processar` também grava `orcamento.csv` (id, opcao, servico, unidade, quantidade, preco_unit, custo) e `orcamento.xlsx`, e põe em `resumo.json`: `custo_por_opcao`, `custo_plano`, `bdi`, `precos_placeholder`, `cortadas_por_janela`, `limites_detector`.
+- Retângulo na via ("caixa"): `defeitos.geojson` tem `angulo_via`, `caixa_ao_longo_m` e `caixa_transversal_m` (`geometria.com_caixa`), e `segmentos.geojson` tem `angulo_via`. É o menor retângulo paralelo ao eixo da via que envolve o defeito; o orçamento corta buraco por ele mais a margem.
 - Orçamento: as regras de engenharia ficam nas tabelas de `config/`; o código só aplica. Nunca inventar nem corrigir preço: linha com fonte PLACEHOLDER é ilustrativa e a tela avisa.
 - O detector é escolhido por `detector:` em `params.yaml`. Nada fora de `deteccao/` pode saber qual detector está rodando.
 
