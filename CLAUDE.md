@@ -35,6 +35,7 @@ src/paviscan/
   orcamento.py    quantitativos e custo de reparo (tabelas em config/solucoes.csv e precos.csv)
   acervo.py       entrada de arquivos: uma pasta por ortofoto em dados/ (orto.tif, pista, eixo)
   relatorio.py    relatório executivo em HTML
+  marca/          identidade visual: logos, cores dos temas claro e escuro, onça de carregamento
   revisao.py      revisão manual por levantamento (`runs/<nome>/revisao.json`), aplicada por cima do detector
   base_publica.py resumo e exemplos da base UAV-PDD2023 (só ilustração no painel)
 config/params.yaml

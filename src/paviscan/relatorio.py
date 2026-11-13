@@ -11,6 +11,7 @@ import geopandas as gpd
 import numpy as np
 import pandas as pd
 
+from . import marca
 from .painel import dados
 
 COR_SEVERIDADE = {"baixa": (227, 178, 60), "media": (238, 123, 48), "alta": (214, 40, 57)}
@@ -76,24 +77,26 @@ def _tabela(df: pd.DataFrame, colunas: list[tuple[str, str, str]]) -> str:
 
 
 CSS = """
-body{font-family:-apple-system,'Segoe UI',Roboto,Arial,sans-serif;color:#1F2A22;margin:0;background:#fff}
+body{font-family:-apple-system,'Segoe UI',Roboto,Arial,sans-serif;color:#1E2315;margin:0;background:#fff}
 .pagina{max-width:1000px;margin:0 auto;padding:28px 32px}
-.topo{background:#1F3A2B;color:#fff;padding:22px 32px}
+.topo{background:FAIXA;color:#fff;padding:16px 32px;display:flex;align-items:center;gap:20px;
+border-bottom:3px solid OURO;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+.topo img{height:78px;flex:none} .topo div{flex:1}
 .topo h1{margin:0;font-size:26px} .topo p{margin:4px 0 0;opacity:.85;font-size:13px}
-h2{font-size:17px;margin:26px 0 10px;border-bottom:2px solid #E3E8E1;padding-bottom:4px}
+h2{font-size:17px;margin:26px 0 10px;border-bottom:2px solid #D3D8BF;padding-bottom:4px}
 .kpis{display:grid;grid-template-columns:repeat(5,1fr);gap:10px;margin-top:18px}
-.kpi{background:#F3F5F2;border-radius:8px;padding:12px 14px}
-.kpi b{display:block;font-size:22px;margin-top:2px} .kpi span{font-size:12px;color:#55615A}
+.kpi{background:#ECEEDF;border-radius:8px;padding:12px 14px}
+.kpi b{display:block;font-size:22px;margin-top:2px} .kpi span{font-size:12px;color:#5A6248}
 .selo{display:inline-block;color:#fff;font-weight:700;border-radius:5px;padding:1px 9px}
 table{border-collapse:collapse;width:100%;font-size:13px}
-th{text-align:left;background:#F3F5F2;padding:6px 8px} td{padding:5px 8px;border-bottom:1px solid #ECEFEA}
+th{text-align:left;background:#ECEEDF;padding:6px 8px} td{padding:5px 8px;border-bottom:1px solid #E3E6D3}
 td.num{text-align:right;font-variant-numeric:tabular-nums}
-.mapa{width:100%;border-radius:8px;border:1px solid #E3E8E1}
+.mapa{width:100%;border-radius:8px;border:1px solid #D3D8BF}
 .grade{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}
-.grade figure{margin:0} .grade img{width:100%;border-radius:6px} .grade figcaption{font-size:11px;color:#55615A}
-.nota{font-size:12px;color:#55615A;margin-top:8px} .aviso{background:#FFF4E0;border-left:4px solid #EF6C00;padding:8px 12px;font-size:12px}
+.grade figure{margin:0} .grade img{width:100%;border-radius:6px} .grade figcaption{font-size:11px;color:#5A6248}
+.nota{font-size:12px;color:#5A6248;margin-top:8px} .aviso{background:#FFF4E0;border-left:4px solid #EF6C00;padding:8px 12px;font-size:12px}
 @media print{.pagina{padding:10px 0} h2{break-after:avoid} table,figure{break-inside:avoid}}
-"""
+""".replace("FAIXA", marca.FAIXA).replace("OURO", marca.OURO)
 
 
 def gerar_html(
@@ -132,9 +135,11 @@ def gerar_html(
         f"<!doctype html><html lang='pt-BR'><head><meta charset='utf-8'><title>PaviScan - {html.escape(titulo)}</title><style>{CSS}</style></head><body>"
     ]
     p.append(
-        f"<div class='topo'><h1>{html.escape(titulo)}</h1><p>Relatório de condição do pavimento · PaviScan · "
+        f"<div class='topo'>{marca.img('exercito.png', 'Exército Brasileiro')}"
+        f"<div><h1>{html.escape(titulo)}</h1><p>Relatório de condição do pavimento · PaviScan · "
         f"imagem {html.escape(str(fonte.get('data') or ''))} · GSD {dados.fmt(100 * resumo['gsd_m'], 1)} cm/px · "
-        f"{dados.fmt(float(segmentos['area_pista_m2'].sum()), 0)} m² de pista analisados</p></div><div class='pagina'>"
+        f"{dados.fmt(float(segmentos['area_pista_m2'].sum()), 0)} m² de pista analisados</p></div>"
+        f"{marca.img('gpte2.svg', '2º Grupamento de Engenharia')}</div><div class='pagina'>"
     )
     p.append(
         "<div class='kpis'>"

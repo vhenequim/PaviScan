@@ -142,6 +142,15 @@ O Uiramutã processa em cerca de 2 min; a geração da pista automática leva ma
 - `./rodar.sh` na raiz: cria o `.venv` e instala as dependências na primeira vez, depois sobe o painel. Documentado no topo do README.
 - Em aberto, sem commit: o usuário reclamou do mapa borrado e do editor de contorno travado. Causas medidas: o mapa mostra uma imagem só de até 4000 px (25 cm/px no Uiramutã contra 3,3 cm nativos) e o contorno do detector chega a mais de mil vértices arrastáveis. Já aplicado na árvore de trabalho, mas sem rodar os testes de novo: orçamento vetorizado, contorno simplificado para editar (`revisao.para_edicao`), recorte do editor em JPEG. `painel/ladrilhos.py` (ortofoto em ladrilhos sob demanda) está escrito e ainda não ligado ao `_mapa`. O usuário mandou parar antes de terminar.
 
+## Identidade visual (13/11)
+
+- A pedido do usuário: símbolo do Exército à esquerda e distintivo do 2º Gpt E à direita na faixa de título (e no relatório), paleta verde-oliva, tema escuro e onça como indicador de carregamento. Tudo em `src/paviscan/marca/`.
+- O EPS do Exército não foi convertido: a máquina não tem interpretador PostScript (Ghostscript). Usei o PNG de 1162 x 2000 px que veio na mesma pasta, reduzido a 360 px de altura.
+- O distintivo do 2º Gpt E foi redesenhado em SVG a partir de um JPEG de 447 px: escudo, faixas e anel por medida na imagem, letras em Rockwell Bold convertidas em contorno, castelo desenhado por geometria. Não é a arte oficial.
+- Temas: `[theme.light]` e `[theme.dark]` em `.streamlit/config.toml`; a troca é no menu ⋮. As cores dos elementos próprios usam `light-dark()` do CSS, porque o Streamlit põe `color-scheme` no `stApp` e não roda o script de novo ao trocar o tema.
+- Carregamento: pseudo-elementos do `stApp` ligados a `data-test-script-state="running"`, com atraso de 0,5 s para clique rápido não piscar. Depende de nomes internos do Streamlit 1.67; se uma versão nova mudar os nomes, o indicador some sem quebrar nada.
+- A onça veio de uma prévia do Dreamstime com marca d'água. O arquivo `marca/onca.svg` está no `.gitignore` até o usuário confirmar a licença ou trocar a imagem.
+
 ## Decisões
 - 10/11: escopo reduzido a um retrato de uma imagem. Orçamento e série temporal saíram.
 - 10/11: detector por anomalia escura local com limiar robusto (mediana + k x MAD), não Otsu nem watershed puro. YOLO do mestrado entra depois pela interface `Detector`.

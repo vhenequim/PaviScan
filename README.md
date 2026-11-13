@@ -18,6 +18,12 @@ Na primeira vez o script cria o ambiente Python em `.venv` e instala as dependê
 
 O script usa o `uv` se ele estiver instalado; senão, procura um Python 3.10 a 3.13.
 
+## Identidade visual
+
+- **Logos.** A faixa de título traz o símbolo do Exército à esquerda e o distintivo do 2º Gpt E à direita; o relatório para impressão também. Os arquivos ficam em `src/paviscan/marca/`. O distintivo (`gpte2.svg`) é um redesenho vetorial feito a partir de uma imagem pequena, não a arte oficial.
+- **Tema claro e tema escuro**, os dois em verde-oliva. A troca fica no menu **⋮** do canto de cima, à direita: `System`, `Light` ou `Dark`. As cores estão em `.streamlit/config.toml` e em `src/paviscan/marca/__init__.py`.
+- **Carregando.** Quando o painel trabalha por mais de meio segundo, aparece no canto de baixo uma onça dentro de um anel que gira; os avisos "Preparando..." usam a mesma onça. A silhueta é o arquivo `src/paviscan/marca/onca.svg`, que **não vai para o git** (imagem de banco com licença a confirmar). Sem ele o painel funciona e mostra só o anel.
+
 ## Instalar à mão
 
 Só é preciso para usar a linha de comando `paviscan` direto ou rodar os testes; o `rodar.sh` já faz isto sozinho.

@@ -12,7 +12,7 @@ import plotly.express as px
 import pydeck as pdk
 import streamlit as st
 
-from paviscan import acervo, base_publica, orcamento, relatorio, revisao
+from paviscan import acervo, base_publica, marca, orcamento, relatorio, revisao
 from paviscan.painel import dados
 from paviscan.painel.dados import (
     CONCEITOS,
@@ -27,7 +27,6 @@ COR = {"baixa": "#E3B23C", "media": "#EE7B30", "alta": "#D62839"}
 COR_RGB = {k: [int(v[i : i + 2], 16) for i in (1, 3, 5)] for k, v in COR.items()}
 COR_CONCEITO = relatorio.COR_CONCEITO
 COR_CONCEITO_RGB = {k: [int(v[i : i + 2], 16) for i in (1, 3, 5)] for k, v in COR_CONCEITO.items()}
-VERDE = "#1F3A2B"
 RUNS = Path(os.environ.get("PAVISCAN_RUNS", "runs"))
 ALTURA_MAPA = 620
 SEM_BARRA = {"displayModeBar": False}
@@ -37,26 +36,7 @@ ABAS = [
 ]  # fmt: skip
 
 st.set_page_config(page_title="PaviScan", page_icon="🛣️", layout="wide")
-st.markdown(
-    f"""
-    <style>
-      .block-container {{padding-top: 3.2rem; padding-bottom: 2rem; max-width: 1500px;}}
-      [data-testid="stMetric"] {{background: #F3F5F2; border-radius: 12px; padding: 14px 16px;
-                                 border-left: 5px solid {VERDE};}}
-      [data-testid="stMetricValue"] {{font-size: 1.8rem;}}
-      .faixa {{background: linear-gradient(100deg, {VERDE} 0%, #2F5D43 70%, #3E7A57 100%);
-               color: #fff; border-radius: 14px; padding: 20px 26px; margin-bottom: 14px;}}
-      .faixa h1 {{color: #fff; margin: 0; font-size: 2.1rem; padding: 0;}}
-      .faixa p {{margin: 6px 0 0; opacity: .88; font-size: .92rem;}}
-      .selo {{display: inline-block; color: #fff; font-weight: 700; border-radius: 7px;
-              padding: 2px 12px;}}
-      .cartao {{background: #F3F5F2; border-radius: 12px; padding: 12px 14px; height: 100%;}}
-      .cartao small {{color: #55615A;}}
-      .passo {{font-weight: 700; color: {VERDE}; font-size: 1.05rem; margin: 6px 0 2px;}}
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
+st.markdown(marca.css(), unsafe_allow_html=True)
 
 
 @st.cache_data(show_spinner=False)
@@ -231,11 +211,11 @@ def _mapa(det, seg, cond_seg, resumo, imagem, mostrar_seg: bool, mostrar_orto: b
         pitch=50 if relevo else 0,
         bearing=-15 if relevo else 0,
     )
-    estilo = {"backgroundColor": VERDE, "color": "white", "fontSize": "13px"}
+    estilo = {"backgroundColor": marca.OLIVA_ESCURO, "color": "white", "fontSize": "13px"}
     return pdk.Deck(
         layers=camadas,
         initial_view_state=vista,
-        map_style="light",
+        map_style=None,  # sem estilo fixo, o Streamlit usa o mapa de fundo do tema ativo
         tooltip={"html": "{dica}", "style": estilo},
     )
 
@@ -619,8 +599,11 @@ with st.sidebar:
         st.info("Nenhum levantamento ainda. Use **Nova análise** para processar a primeira imagem.")
 if not runs:
     st.markdown(
-        "<div class='faixa'><h1>PaviScan</h1><p>Envie uma ortofoto, indique a via e veja os defeitos "
-        "medidos, a condição por trecho e a estimativa de reparo.</p></div>",
+        marca.faixa(
+            "PaviScan",
+            "Envie uma ortofoto, indique a via e veja os defeitos medidos, a condição por trecho "
+            "e a estimativa de reparo.",
+        ),
         unsafe_allow_html=True,
     )
     _nova_analise()
@@ -726,11 +709,13 @@ fonte = resumo.get("fonte") or {}
 pista_toda = dados.area_e_extensao(seg)
 titulo = fonte.get("titulo") or run.name.replace("_", " ").title()
 st.markdown(
-    f"<div class='faixa'><h1>{html.escape(titulo)}</h1><p>Levantamento <b>{html.escape(run.name)}</b> · "
-    f"GSD {fmt(100 * resumo['gsd_m'], 1)} cm/px · {fmt(pista_toda['area_pista_m2'], 0)} m² de pista em "
-    f"{pista_toda['n_segmentos']} segmentos de {fmt(pista_toda['extensao_m'], 0)} m"
-    + (f" · imagem de {html.escape(str(fonte['data']))}" if fonte.get("data") else "")
-    + "</p></div>",
+    marca.faixa(
+        titulo,
+        f"Levantamento <b>{html.escape(run.name)}</b> · "
+        f"GSD {fmt(100 * resumo['gsd_m'], 1)} cm/px · {fmt(pista_toda['area_pista_m2'], 0)} m² de pista em "
+        f"{pista_toda['n_segmentos']} segmentos de {fmt(pista_toda['extensao_m'], 0)} m"
+        + (f" · imagem de {html.escape(str(fonte['data']))}" if fonte.get("data") else ""),
+    ),
     unsafe_allow_html=True,
 )
 
@@ -1177,7 +1162,7 @@ if aba == "Orçamento":
         st.subheader("Custo por via")
         if len(orc["por_via"]):
             fig = px.bar(orc["por_via"].head(15), x="custo", y="via", orientation="h",
-                         color_discrete_sequence=["#2F5D43"])  # fmt: skip
+                         color_discrete_sequence=[marca.OLIVA])  # fmt: skip
             fig.update_layout(
                 height=max(260, 26 * min(15, len(orc["por_via"])) + 80), margin=dict(l=0, r=0, t=10, b=0),
                 xaxis_title="Custo direto (R$)", yaxis_title=None, separators=",.",
@@ -1331,7 +1316,7 @@ if aba == "Próximos passos":
                 }
             ).sort_values("Defeitos anotados")
             fig = px.bar(tabela_base, x="Defeitos anotados", y="Classe", orientation="h",
-                         color_discrete_sequence=["#2F5D43"], text="Defeitos anotados")  # fmt: skip
+                         color_discrete_sequence=[marca.OLIVA], text="Defeitos anotados")  # fmt: skip
             fig.update_layout(
                 height=300, margin=dict(l=0, r=0, t=10, b=0), yaxis_title=None, separators=",."
             )

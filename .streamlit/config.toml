@@ -1,9 +1,34 @@
-[theme]
-base = "light"
-primaryColor = "#2F6B3F"
-backgroundColor = "#FFFFFF"
-secondaryBackgroundColor = "#F3F5F2"
-textColor = "#1F2A22"
+# Identidade visual: verde-oliva, com tema claro e tema escuro.
+# A troca fica no menu do painel (canto de cima, a direita): Settings > Choose app theme.
+# As cores dos elementos proprios do painel (faixa, cartoes) estao em painel/marca.py.
+
+[theme.light]
+primaryColor = "#4F5D2A"
+backgroundColor = "#FAFAF4"
+secondaryBackgroundColor = "#ECEEDF"
+textColor = "#1E2315"
+linkColor = "#4F5D2A"
+borderColor = "#D3D8BF"
+dataframeHeaderBackgroundColor = "#ECEEDF"
+
+[theme.light.sidebar]
+backgroundColor = "#E6E9D5"
+secondaryBackgroundColor = "#F6F7EE"
+borderColor = "#C4CAAB"
+
+[theme.dark]
+primaryColor = "#6F8136"
+backgroundColor = "#14180D"
+secondaryBackgroundColor = "#232A17"
+textColor = "#E6EAD6"
+linkColor = "#B4C474"
+borderColor = "#3B4527"
+dataframeHeaderBackgroundColor = "#232A17"
+
+[theme.dark.sidebar]
+backgroundColor = "#1B2112"
+secondaryBackgroundColor = "#2A3219"
+borderColor = "#3B4527"
 
 [browser]
 gatherUsageStats = false
