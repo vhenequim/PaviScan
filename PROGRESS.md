@@ -176,6 +176,19 @@ O Uiramutã processa em cerca de 2 min; a geração da pista automática leva ma
   - A frase do recorte com seleção vazia sai certa.
   - A direção da via em levantamento sem `trecho` é calculada por via.
 
+## Versão publicada no Streamlit Community Cloud (13/11)
+
+- O usuário pediu para publicar com todos os levantamentos, em app privado.
+- O Community Cloud só faz app privado a partir de repositório privado, e só um por conta. Este repositório é público, então o pacote fica num repositório privado à parte. `scripts/publicar.py` monta esse pacote numa pasta fora daqui, com:
+  - o código do último commit;
+  - os 4 levantamentos reais, sem a sintética;
+  - a prévia em WebP: 52 MB no total, contra 130 MB com PNG;
+  - sem a ortofoto e sem o caminho local dela;
+  - `requirements.txt` e `streamlit_app.py`. A entrada põe `src/` no caminho, porque a documentação não garante que o Cloud instale o pacote.
+- Modo publicado do painel: sem "Nova análise", sem editor e com a revisão só para consulta. Conferido no navegador rodando a partir do pacote (porta 8502) e com teste.
+- O `.gitignore` ignorava qualquer pasta `runs/`, inclusive `publicado/runs`. Agora só ignora a da raiz.
+- Falta: criar o repositório privado, enviar o pacote e o deploy em share.streamlit.io, que é do usuário (login com GitHub, entrada `streamlit_app.py`, Python 3.12, convites por e-mail).
+
 ## Decisões
 - 10/11: escopo reduzido a um retrato de uma imagem. Orçamento e série temporal saíram.
 - 10/11: detector por anomalia escura local com limiar robusto (mediana + k x MAD), não Otsu nem watershed puro. YOLO do mestrado entra depois pela interface `Detector`.
